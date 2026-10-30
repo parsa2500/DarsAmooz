@@ -51,7 +51,7 @@ PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و ب
 ### Pipeline
 1. **Ingest** — `pdftotext` (poppler) → cleaned Persian text → chapter split  
 2. **Chunk** — paragraph-aware chunks for LLM context  
-3. **Generate** — OpenAI-compatible Chat Completions (`OPENAI_API_KEY`, optional `OPENAI_BASE_URL` / `OPENAI_MODEL`)  
+3. **Generate** — AgentRouter / OpenAI-compatible API (`AGENTROUTER_*`, falling back to `OPENAI_*`; Responses API when required)  
 4. **Validate** — exactly 4 options, one correct index, explanation, chapter, difficulty  
 5. **Export** — JSON + CSV (UTF-8 BOM for Excel)
 
@@ -60,7 +60,8 @@ See `.env.example`. Default provider is **AgentRouter** (`AGENTROUTER_API_KEY`, 
 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` still work as fallbacks. Any OpenAI-compatible endpoint is fine.
 
 ### Sample output
-`samples/physics10_ch1_sample.json` contains **5 hand-written SAMPLE** questions for chapter 1 so the schema is visible without an API key.
+- `samples/physics10_ch1_sample.json` — **5 hand-written SAMPLE** questions (no API key needed: `darsamooz generate --chapter 1 --sample`).
+- `samples/physics10_ch1_generated.json` / `.csv` — **20 LLM-generated** chapter-1 questions (AgentRouter).
 
 ### Tests
 ```bash

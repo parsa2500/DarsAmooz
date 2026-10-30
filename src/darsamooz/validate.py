@@ -30,15 +30,28 @@ def validate_question_dict(raw: dict, *, chapter: int, chapter_title: str, qid: 
     except ValueError:
         difficulty = Difficulty.medium
 
+    stem = str(raw.get("stem") or raw.get("question") or "").strip()
+    explanation = str(raw.get("explanation") or raw.get("reason") or "").strip()
+    opts = [str(o).strip() for o in (options or [])]
+    if options is None or len(opts) != 4:
+        raise ValueError("exactly 4 options required")
+    if correct is None:
+        raise ValueError("correct_index missing")
+    # Require Persian in stem/explanation for Iranian تست items
+    if not any("\u0600" <= c <= "\u06FF" for c in stem):
+        raise ValueError("stem must contain Persian text")
+    if not any("\u0600" <= c <= "\u06FF" for c in explanation):
+        raise ValueError("explanation must contain Persian text")
+
     return Question(
         id=qid,
         chapter=chapter,
         chapter_title=chapter_title,
         section=raw.get("section"),
-        stem=str(raw.get("stem") or raw.get("question") or "").strip(),
-        options=[str(o).strip() for o in options],
+        stem=stem,
+        options=opts,
         correct_index=int(correct),
-        explanation=str(raw.get("explanation") or raw.get("reason") or "").strip(),
+        explanation=explanation,
         difficulty=difficulty,
         source_refs=list(raw.get("source_refs") or []),
         tags=list(raw.get("tags") or []),
