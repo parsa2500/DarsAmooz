@@ -1,0 +1,41 @@
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Textbook PDFs (copyright — download via scripts/)
+data/textbooks/*.pdf
+data/extracted/*
+!data/extracted/.gitkeep
+!data/manifests/
+!data/manifests/**
+
+# Local exports (keep samples/)
+data/exports/*
+!data/exports/.gitkeep
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Extracted textbook text (copyrighted content)
+data/textbooks/*.txt
+data/textbooks/*.clean.txt
