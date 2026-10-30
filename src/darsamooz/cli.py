@@ -58,9 +58,9 @@ def generate_cmd(chapter: int, count: int, out_prefix: str | None, sample: bool)
         questions = load_sample_questions()[:count]
         click.echo(f"Loaded {len(questions)} SAMPLE questions (not LLM-generated).")
     else:
-        if not settings.openai_api_key:
+        if not settings.api_key:
             raise click.ClickException(
-                "OPENAI_API_KEY missing. Set it in .env, or pass --sample for demo output."
+                "AGENTROUTER_API_KEY (or OPENAI_API_KEY) missing. Set it in .env, or pass --sample for demo output."
             )
         questions = generate_from_chapter(chapter, count=count, settings=settings)
         click.echo(f"Generated {len(questions)} questions.")

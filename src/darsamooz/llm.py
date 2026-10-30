@@ -17,24 +17,25 @@ class LLMProvider(ABC):
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    """OpenAI Chat Completions API (or any compatible base URL)."""
+    """OpenAI Chat Completions API (AgentRouter and other compatible bases)."""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
-        if not self.settings.openai_api_key:
+        if not self.settings.api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY is not set. Add it to .env (see .env.example) "
-                "or export OPENAI_API_KEY. Sample mode works without a key."
+                "No API key set. Add AGENTROUTER_API_KEY (or OPENAI_API_KEY) to .env "
+                "(see .env.example). Sample mode works without a key: "
+                "`darsamooz generate --chapter 1 --sample`."
             )
 
     def complete_json(self, system: str, user: str) -> Any:
-        url = self.settings.openai_base_url.rstrip("/") + "/chat/completions"
+        url = self.settings.base_url.rstrip("/") + "/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self.settings.openai_api_key}",
+            "Authorization": f"Bearer {self.settings.api_key}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": self.settings.openai_model,
+            "model": self.settings.model,
             "temperature": 0.4,
             "response_format": {"type": "json_object"},
             "messages": [
@@ -42,9 +43,13 @@ class OpenAICompatibleProvider(LLMProvider):
                 {"role": "user", "content": user},
             ],
         }
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=180.0) as client:
             resp = client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Do not include request headers (Bearer) in errors
+                raise RuntimeError(
+                    f"LLM HTTP {resp.status_code}: {resp.text[:500]}"
+                )
             data = resp.json()
         content = data["choices"][0]["message"]["content"]
         return _parse_json_payload(content)

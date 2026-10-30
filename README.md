@@ -29,7 +29,7 @@ python scripts/download_physics10.py
 
 ### استفاده
 ```bash
-cp .env.example .env   # سپس OPENAI_API_KEY را بگذارید
+cp .env.example .env   # سپس AGENTROUTER_API_KEY را بگذارید
 
 darsamooz chapters
 darsamooz ingest --pdf data/textbooks/physics10-riazi-110209.pdf
@@ -56,7 +56,8 @@ PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و ب
 5. **Export** — JSON + CSV (UTF-8 BOM for Excel)
 
 ### Config
-See `.env.example`. Any OpenAI-compatible endpoint works (OpenAI, Azure OpenAI, Groq, Together, local vLLM, …).
+See `.env.example`. Default provider is **AgentRouter** (`AGENTROUTER_API_KEY`, `AGENTROUTER_BASE_URL`, `AGENTROUTER_MODEL`).  
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` still work as fallbacks. Any OpenAI-compatible endpoint is fine.
 
 ### Sample output
 `samples/physics10_ch1_sample.json` contains **5 hand-written SAMPLE** questions for chapter 1 so the schema is visible without an API key.
