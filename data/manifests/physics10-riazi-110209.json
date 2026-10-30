@@ -1,0 +1,17 @@
+{
+  "book_code": "110209",
+  "title": "فیزیک (۱) — پایه دهم دوره دوم متوسطه",
+  "track": "ریاضی و فیزیک",
+  "grade": "دهم",
+  "official_page": "http://www.chap.sch.ir/books/4999",
+  "source_url": "https://physicfa.ir/wp-content/uploads/2024/12/Physic1R-1403-1404-physicfa.pdf",
+  "source_note": "Mirror of the official textbook (کد ۱۱۰۲۰۹). Prefer downloading from chap.sch.ir when the direct file link is available. Do NOT commit the PDF to git.",
+  "chapters": [
+    {"number": 1, "title": "فیزیک و اندازه‌گیری"},
+    {"number": 2, "title": "ویژگی‌های فیزیکی مواد"},
+    {"number": 3, "title": "کار، انرژی و توان"},
+    {"number": 4, "title": "دما و گرما"},
+    {"number": 5, "title": "ترمودینامیک"}
+  ],
+  "notes": "Textbook PDF is copyrighted by سازمان پژوهش و برنامه‌ریزی آموزشی. Store locally via scripts/download_physics10.py only."
+}
