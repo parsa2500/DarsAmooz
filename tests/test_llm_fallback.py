@@ -179,3 +179,62 @@ def test_get_provider_missing_fallback_key_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="no API key"):
         get_provider(Settings())
+
+
+def test_fallback_openrouter_to_gemini_direction(caplog):
+    """Fallback must work with OpenRouter primary and Gemini secondary."""
+    primary = BoomProvider(RuntimeError("LLM request failed HTTP 429: openrouter rate limit"))
+    secondary = OkProvider({"ok": True}, label="gemini", model="gemini-test")
+    fb = FallbackLLMProvider(
+        primary,
+        secondary,
+        primary_name="openrouter",
+        primary_model="or-model",
+        fallback_name="gemini",
+        fallback_model="gemini-test",
+    )
+    with caplog.at_level(logging.WARNING):
+        out = fb.complete_json("sys", "user")
+    assert out == {"ok": True}
+    assert primary.calls == 1
+    assert secondary.calls == 1
+    assert fb.last_call["fallback_used"] is True
+    assert fb.last_call["provider"] == "gemini"
+    assert fb.last_call["fallback_from"] == "openrouter"
+    summary = fb.fallback_summary()
+    assert summary["primary_provider"] == "openrouter"
+    assert summary["fallback_provider"] == "gemini"
+    assert summary["fallback_count"] == 1
+    assert summary["calls_by_provider"].get("gemini") == 1
+
+
+def test_get_provider_openrouter_primary_gemini_fallback(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "ok")
+    monkeypatch.setenv("OPENROUTER_MODEL", "or-test")
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gk")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    from darsamooz.config import Settings
+
+    settings = Settings()
+    assert settings.provider_name == "openrouter"
+    assert settings.fallback_provider_name == "gemini"
+    provider = get_provider(settings)
+    assert isinstance(provider, FallbackLLMProvider)
+    assert provider.primary_name == "openrouter"
+    assert provider.fallback_name == "gemini"
+
+
+def test_auto_detect_prefers_openrouter(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "ok")
+    monkeypatch.setenv("OPENROUTER_MODEL", "or-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "gk")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
+    from darsamooz.config import Settings
+
+    # Clear pydantic field so env auto path is used
+    s = Settings(llm_provider=None, llm_fallback_provider=None)
+    assert s.provider_name == "openrouter"

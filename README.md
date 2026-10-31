@@ -40,11 +40,11 @@ python scripts/download_physics10.py
 
 ```bash
 cp .env.example .env
-# در .env: LLM_PROVIDER و کلید/مدل مربوطه را بگذارید
-# مثال Gemini: GEMINI_API_KEY + GEMINI_MODEL=gemini-3.6-flash
-# مثال OpenRouter: LLM_PROVIDER=openrouter + OPENROUTER_API_KEY + OPENROUTER_MODEL=google/gemma-4-31b-it:free
-# Fallback قابل‌مشاهده هنگام خطای API جمینای: LLM_FALLBACK_PROVIDER=openrouter
+# در .env: LLM_PROVIDER و کلید/مدل مربوطه را بگذارید (پیش‌فرض: openrouter)
+# OpenRouter: OPENROUTER_API_KEY + OPENROUTER_MODEL=… (مثلاً google/gemma-4-31b-it:free)
+# Fallback قابل‌مشاهده به Gemini هنگام خطای API: LLM_FALLBACK_PROVIDER=gemini
 #   (لاگ هشدار + ثبت در metrics.json و وضعیت جاب UI؛ هرگز .env را commit نکنید)
+# جایگزین: LLM_PROVIDER=gemini + GEMINI_API_KEY + GEMINI_MODEL=gemini-3.6-flash
 
 darsamooz chapters
 darsamooz ingest --pdf data/textbooks/physics10-riazi-110209.pdf
@@ -75,7 +75,7 @@ darsamooz db-sync
 ### بازبینی، تأیید جواب، تعادل و خروجی مشتری (MVP)
 - **بازبینی:** هر سؤال وضعیت `pending` / `approved` / `rejected` / `needs_review` دارد. در UI یا با `darsamooz review` تأیید/رد/ویرایش کنید. فقط تأییدشده‌ها: `darsamooz export-approved`.
 - **تأیید جواب:** بعد از تولید، یک پاس دوم LLM کور سؤال را حل می‌کند (`--verify` پیش‌فرض روشن؛ `--no-verify` برای خاموش). اختلاف یا ابهام → `needs_review` (حذف نمی‌شود). مدل جدا: `VERIFY_MODEL` در `.env`.
-- **Fallback LLM:** اگر `LLM_FALLBACK_PROVIDER=openrouter` باشد، هنگام خطای API ارائه‌دهندهٔ اصلی (۴۲۹/سهمیه، ۵xx، تایم‌اوت و …) به‌طور خودکار و **قابل‌مشاهده** به OpenRouter می‌رود (هشدار در لاگ، `fallback_count` / `calls_by_provider` / دلایل در `metrics.json` و UI). اگر fallback هم شکست بخورد، خطای واضح پرتاب می‌شود. خاموش: خالی/`none`.
+- **Fallback LLM:** پیش‌فرض `LLM_PROVIDER=openrouter` و `LLM_FALLBACK_PROVIDER=gemini`. هنگام خطای API ارائه‌دهندهٔ اصلی (۴۲۹/سهمیه، ۵xx، تایم‌اوت و …) به‌طور خودکار و **قابل‌مشاهده** به fallback می‌رود (هشدار در لاگ، `fallback_count` / `calls_by_provider` / دلایل در `metrics.json` و UI) — هر دو جهت openrouter↔gemini پشتیبانی می‌شود. اگر fallback هم شکست بخورد، خطای واضح پرتاب می‌شود. خاموش: خالی یا none.
 - **تعادل:** گزینه‌ی درست به‌صورت قطعی روی الف–د پخش می‌شود (`--balance-answers`). ترکیب سختی: `--difficulty-mix easy=30,medium=50,hard=20`. توزیع در `metrics.json` و UI.
 - **خروجی مشتری:** پروفایل نگاشت در `data/export_profiles/` (فعلاً فقط `generic`). وقتی فرمت import سایت مشتری رسید، یک JSON جدید اضافه کنید — فرمت مشتری را از خودمان اختراع نمی‌کنیم.
   ```bash
@@ -111,7 +111,7 @@ darsamooz to-md path/to/questions.json --out path/to/questions.md
 ### Review, verify, balance, client export (MVP)
 - **Review:** each question has `pending` / `approved` / `rejected` / `needs_review`. Approve/reject/edit in the web UI or via `darsamooz review`. Export approved-only with `darsamooz export-approved`.
 - **Answer verification:** after generation a blind second LLM pass solves each item (`--verify` on by default). Mismatch/ambiguity → `needs_review` (never silently dropped). Optional `VERIFY_MODEL` in `.env`.
-- **LLM fallback:** with `LLM_FALLBACK_PROVIDER=openrouter`, primary API errors (429/quota, 5xx, timeouts, other HTTP/API failures) **visibly** switch to OpenRouter — warning log, plus `fallback_count` / `calls_by_provider` / reasons in `metrics.json` and the web job status. Applies to generation and verify. If fallback also fails, a clear combined error is raised. Disable with empty/`none`.
+- **LLM fallback:** defaults are `LLM_PROVIDER=openrouter` and `LLM_FALLBACK_PROVIDER=gemini`. Primary API errors (429/quota, 5xx, timeouts, other HTTP/API failures) **visibly** switch to the fallback — warning log, plus `fallback_count` / `calls_by_provider` / reasons in `metrics.json` and the web job status. Works both ways (openrouter↔gemini). Applies to generation and verify. If fallback also fails, a clear combined error is raised. Disable with empty/none.
 - **Balance:** correct options are deterministically redistributed over A–D (`--balance-answers`). Steer difficulty with `--difficulty-mix easy=30,medium=50,hard=20`. Distributions land in `metrics.json` and the UI.
 - **Client export:** mapping profiles live under `data/export_profiles/` (shipped: `generic` only). When the client's exam-site import format arrives, add a new profile JSON — do not invent their schema.
   ```bash
@@ -120,7 +120,7 @@ darsamooz to-md path/to/questions.json --out path/to/questions.md
   ```
 
 ### Config
-See `.env.example`. Select provider with `LLM_PROVIDER=gemini` | `openrouter` | `openai`.
+See `.env.example`. Default provider is **openrouter**. Select with `LLM_PROVIDER=openrouter` | `gemini` | `openai`.
 
 **Gemini**
 - `GEMINI_API_KEY` — local `.env` only (gitignored; never commit)
@@ -131,7 +131,7 @@ See `.env.example`. Select provider with `LLM_PROVIDER=gemini` | `openrouter` | 
 - `OPENROUTER_API_KEY` — local `.env` only
 - `OPENROUTER_MODEL` — exact model id (required). Free models end with `:free` (e.g. `google/gemma-4-31b-it:free`)
 - `OPENROUTER_BASE_URL` — defaults to `https://openrouter.ai/api/v1`
-- `LLM_FALLBACK_PROVIDER=openrouter` — optional visible fallback target when primary is e.g. Gemini
+- `LLM_FALLBACK_PROVIDER=gemini` — optional visible fallback (default in `.env.example` when primary is OpenRouter)
 
 **OpenAI-compatible**
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` when `LLM_PROVIDER=openai`

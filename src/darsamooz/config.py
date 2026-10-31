@@ -83,7 +83,7 @@ def provider_model(provider: str) -> str:
 
 
 class Settings(BaseSettings):
-    """LLM provider via LLM_PROVIDER. Optional visible fallback via LLM_FALLBACK_PROVIDER."""
+    """LLM provider via LLM_PROVIDER (default openrouter). Optional visible fallback via LLM_FALLBACK_PROVIDER."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -106,13 +106,13 @@ class Settings(BaseSettings):
         explicit = (self.llm_provider or _first_env("LLM_PROVIDER") or "").strip().lower()
         if explicit in _VALID_PROVIDERS:
             return explicit
-        if _first_env("GEMINI_API_KEY"):
-            return "gemini"
         if _first_env("OPENROUTER_API_KEY"):
             return "openrouter"
+        if _first_env("GEMINI_API_KEY"):
+            return "gemini"
         if _first_env("OPENAI_API_KEY"):
             return "openai"
-        return "gemini"
+        return "openrouter"
 
     @property
     def fallback_provider_name(self) -> str | None:
