@@ -29,6 +29,11 @@ python scripts/download_physics10.py
 ```
 
 ### استفاده
+### لانچر ویندوز
+- اجرای تعاملی: دوبارکلیک روی میانبر دسکتاپ **DarsAmooz - اجرا** یا `scripts\launch.bat`
+- توقف امن فقط فرایندهای درس‌آموز: **DarsAmooz - توقف** یا `scripts\kill.bat`
+- ساخت دوبارهٔ میانبرها: `powershell -File scripts\create-desktop-shortcuts.ps1`
+
 ```bash
 cp .env.example .env
 # در .env: LLM_PROVIDER و کلید/مدل مربوطه را بگذارید

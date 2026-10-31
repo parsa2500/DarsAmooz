@@ -39,3 +39,7 @@ data/exports/*
 # Extracted textbook text (copyrighted content)
 data/textbooks/*.txt
 data/textbooks/*.clean.txt
+
+# Launcher runtime
+.darsamooz.pid
+
