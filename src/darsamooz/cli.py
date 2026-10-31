@@ -73,12 +73,16 @@ def generate_cmd(chapter: int, count: int, out_prefix: str | None, sample: bool)
     else:
         if not settings.api_key:
             raise click.ClickException(
-                "AGENTROUTER_API_KEY (or OPENAI_API_KEY) missing. Set it in .env, or pass --sample for demo output."
+                "API key missing for LLM_PROVIDER="
+                f"{settings.provider_name}. Set GEMINI_API_KEY (or OPENAI_API_KEY) "
+                "in .env, or pass --sample for demo output."
             )
         try:
+            click.echo(
+                f"Provider={settings.provider_name} model={settings.model}"
+            )
             questions = generate_from_chapter(chapter, count=count, settings=settings)
         except RuntimeError as exc:
-            # Surface provider errors (content-blocked, unauthorized, no channel) clearly.
             raise click.ClickException(str(exc)) from exc
         click.echo(f"Generated {len(questions)} questions.")
 

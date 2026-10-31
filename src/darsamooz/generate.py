@@ -24,7 +24,7 @@ Return ONLY valid JSON:
       "difficulty": "easy|medium|hard",
       "section": "subsection name if known",
       "tags": ["tag"],
-      "source_refs": ["short quote or page cue from the source"]
+      "source_refs": ["verbatim short quote from the source text that supports the answer"]
     }
   ]
 }
@@ -39,6 +39,7 @@ Hard rules:
 - Each item must be understandable without seeing the textbook
 - Do NOT repeat the same scenario/numbers across items
 - Aim for a mix of difficulties when asked for several items
+- source_refs MUST quote a short continuous phrase that actually appears in the source text
 """
 
 
@@ -115,6 +116,7 @@ def generate_from_chapter(
     collected: list[dict] = []
     accepted_stems: list[str] = []
     max_rounds = max(len(chunks) * 2, (count + 3) // 4 * 3)
+    last_error: Exception | None = None
 
     for i in range(max_rounds):
         if len(collected) >= count:
@@ -124,9 +126,10 @@ def generate_from_chapter(
         user = _build_chunk_prompt(chapter_num, title, chunk, batch)
         try:
             data = provider.complete_json(SYSTEM_PROMPT, user)
-        except Exception:
-            # Surface the first hard failure clearly (no silent workaround).
-            raise
+        except Exception as exc:
+            last_error = exc
+            # Do not silently switch models/providers; surface after retries exhausted.
+            continue
         items = data.get("questions", data if isinstance(data, list) else [])
         if not isinstance(items, list):
             items = []
@@ -155,9 +158,14 @@ def generate_from_chapter(
             questions.append(q)
         except Exception:
             continue
-    if len(questions) < max(1, count // 2) and collected:
-        questions = validate_batch(
-            collected[:count], chapter=chapter_num, chapter_title=title, id_prefix=prefix
+
+    if len(questions) < count:
+        detail = f" last_error={last_error}" if last_error else ""
+        raise RuntimeError(
+            f"Only generated {len(questions)}/{count} valid book-grounded questions "
+            f"for chapter {chapter_num} after {max_rounds} rounds "
+            f"(provider={settings.provider_name}, model={settings.model})."
+            f"{detail}"
         )
     return questions[:count]
 

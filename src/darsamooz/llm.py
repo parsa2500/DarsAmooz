@@ -9,6 +9,8 @@ import httpx
 
 from darsamooz.config import Settings, get_settings
 
+_VALID_PROVIDERS = frozenset({"gemini", "openrouter", "openai"})
+
 
 class LLMProvider(ABC):
     @abstractmethod
@@ -17,29 +19,47 @@ class LLMProvider(ABC):
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    """OpenAI-compatible Chat Completions + Responses API (AgentRouter, etc.).
+    """OpenAI-compatible Chat Completions (Gemini, OpenRouter, OpenAI, etc.).
 
-    No client impersonation headers. No silent model fallback — if the configured
-    model fails, raise a clear error with the provider message.
+    No client impersonation beyond OpenRouter's documented app headers.
+    No silent model fallback — if the configured model fails, raise clearly.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
-        if not self.settings.api_key:
+        provider = self.settings.provider_name
+        if provider not in _VALID_PROVIDERS:
             raise RuntimeError(
-                "No API key set. Add AGENTROUTER_API_KEY (or OPENAI_API_KEY) to .env "
-                "(see .env.example). Sample mode works without a key: "
+                f"Unsupported LLM_PROVIDER={provider!r}. "
+                "Use 'gemini', 'openrouter', or 'openai'."
+            )
+        if not self.settings.api_key:
+            key_hint = {
+                "gemini": "GEMINI_API_KEY",
+                "openrouter": "OPENROUTER_API_KEY",
+                "openai": "OPENAI_API_KEY",
+            }[provider]
+            raise RuntimeError(
+                f"No {key_hint} set. Add it to local .env (see .env.example). "
+                "Sample mode works without a key: "
                 "`darsamooz generate --chapter 1 --sample`."
             )
+        # Accessing .model raises if unset — intentional (no silent default).
         self._model = self.settings.model
+        self._provider = provider
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.settings.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": "darsamooz/0.1 (+https://github.com/parsa2500/DarsAmooz)",
         }
+        if self._provider == "openrouter":
+            # OpenRouter optional attribution headers (not secrets).
+            headers["HTTP-Referer"] = "https://github.com/parsa2500/DarsAmooz"
+            headers["X-Title"] = "DarsAmooz"
+        return headers
 
     def _post_chat(self, client: httpx.Client, system: str, user: str) -> httpx.Response:
         url = self.settings.base_url.rstrip("/") + "/chat/completions"
@@ -54,67 +74,34 @@ class OpenAICompatibleProvider(LLMProvider):
         }
         return client.post(url, headers=self._headers(), json=payload)
 
-    def _post_responses(self, client: httpx.Client, system: str, user: str) -> httpx.Response:
-        url = self.settings.base_url.rstrip("/") + "/responses"
-        payload = {
-            "model": self._model,
-            "input": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        }
-        return client.post(url, headers=self._headers(), json=payload)
-
-    def _extract_responses_text(self, data: dict) -> str:
-        if isinstance(data.get("output_text"), str) and data["output_text"].strip():
-            return data["output_text"]
-        chunks: list[str] = []
-        for item in data.get("output") or []:
-            if not isinstance(item, dict) or item.get("type") != "message":
-                continue
-            for part in item.get("content") or []:
-                if not isinstance(part, dict):
-                    continue
-                text = part.get("text") or part.get("value") or ""
-                if text:
-                    chunks.append(text)
-        if not chunks:
-            raise RuntimeError(
-                f"Model {self._model!r}: Responses API returned no message text"
-            )
-        return "\n".join(chunks)
-
     def _format_error(self, resp: httpx.Response, *, via: str) -> str:
         body = (resp.text or "").strip()
         snippet = body[:800] if body else "(empty body)"
         return (
-            f"LLM request failed for model {self._model!r} via {via}: "
-            f"HTTP {resp.status_code}: {snippet}"
+            f"LLM request failed for provider={self._provider!r} model={self._model!r} "
+            f"via {via}: HTTP {resp.status_code}: {snippet}"
         )
 
     def complete_json(self, system: str, user: str) -> Any:
         with httpx.Client(timeout=180.0) as client:
-            # Prefer Chat Completions; if the gateway requires Responses for this
-            # same model, retry once on /responses (not a model switch).
             chat = self._post_chat(client, system, user)
             if chat.status_code < 400:
                 data = chat.json()
-                content = data["choices"][0]["message"]["content"]
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise RuntimeError(
+                        f"Unexpected chat/completions payload for model {self._model!r}: "
+                        f"{str(data)[:400]}"
+                    ) from exc
+                if not content:
+                    raise RuntimeError(
+                        f"Model {self._model!r} returned empty content "
+                        f"(finish_reason={data['choices'][0].get('finish_reason')!r})"
+                    )
                 return _parse_json_payload(content)
 
-            needs_responses = (
-                "/v1/responses" in chat.text
-                or "Responses API" in chat.text
-                or "Unsupported parameter" in chat.text
-            )
-            if needs_responses:
-                resp = self._post_responses(client, system, user)
-                if resp.status_code < 400:
-                    content = self._extract_responses_text(resp.json())
-                    return _parse_json_payload(content)
-                raise RuntimeError(self._format_error(resp, via="/v1/responses"))
-
-            raise RuntimeError(self._format_error(chat, via="/v1/chat/completions"))
+            raise RuntimeError(self._format_error(chat, via="/chat/completions"))
 
 
 def _parse_json_payload(content: str) -> Any:
@@ -132,4 +119,5 @@ def _parse_json_payload(content: str) -> Any:
 
 
 def get_provider(settings: Settings | None = None) -> LLMProvider:
+    settings = settings or get_settings()
     return OpenAICompatibleProvider(settings)
