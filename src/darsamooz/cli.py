@@ -8,12 +8,15 @@ import click
 from darsamooz import __version__
 from darsamooz.config import get_settings
 from darsamooz.export import (
-    export_csv,
-    export_json,
     export_markdown,
     load_questions_from_json,
 )
-from darsamooz.generate import generate_from_chapter, load_sample_questions
+from darsamooz.generate import (
+    generate_from_chapter_with_run,
+    load_sample_questions,
+    persist_generation,
+    persist_sample_run,
+)
 from darsamooz.ingest import PHYSICS10_CHAPTERS, ingest_pdf
 
 
@@ -51,11 +54,14 @@ def chapters_cmd() -> None:
 )
 @click.option("--slug", default="physics10-riazi-110209", show_default=True)
 def ingest_cmd(pdf: Path, slug: str) -> None:
-    """Extract text from a PDF and split into chapters."""
+    """Extract text from a PDF and split into chapters + section maps."""
     chapters = ingest_pdf(pdf, book_slug=slug)
     for ch in chapters:
         click.echo(f"فصل {ch.number}: {ch.title} — {len(ch.text)} chars")
     click.echo(f"Saved under {get_settings().extracted_dir}/")
+    click.echo(
+        f"Section maps: {get_settings().extracted_dir}/{slug}/chN/sections.json"
+    )
 
 
 @main.command("generate")
@@ -70,11 +76,18 @@ def ingest_cmd(pdf: Path, slug: str) -> None:
 def generate_cmd(chapter: int, count: int, out_prefix: str | None, sample: bool) -> None:
     """Generate multiple-choice questions for a chapter."""
     settings = get_settings()
+    prefix = out_prefix or f"phys10-ch{chapter}"
+
     if sample:
         if chapter != 1:
             raise click.ClickException("Bundled sample is only for chapter 1")
         questions = load_sample_questions()[:count]
         click.echo(f"Loaded {len(questions)} SAMPLE questions (not LLM-generated).")
+        paths, run = persist_sample_run(
+            questions, chapter=chapter, prefix=prefix, settings=settings
+        )
+        click.echo(f"run_id: {run.run_id}")
+        click.echo(f"run: {run.root}")
     else:
         if not settings.api_key:
             raise click.ClickException(
@@ -86,21 +99,28 @@ def generate_cmd(chapter: int, count: int, out_prefix: str | None, sample: bool)
             click.echo(
                 f"Provider={settings.provider_name} model={settings.model}"
             )
-            questions = generate_from_chapter(chapter, count=count, settings=settings)
-        except RuntimeError as exc:
+            result = generate_from_chapter_with_run(
+                chapter, count=count, settings=settings
+            )
+        except (RuntimeError, FileNotFoundError) as exc:
             raise click.ClickException(str(exc)) from exc
+        questions = result.questions
         click.echo(f"Generated {len(questions)} questions.")
+        click.echo(f"run_id: {result.run.run_id}")
+        click.echo(f"run: {result.run.root}")
+        metrics = result.metrics
+        click.echo(
+            "metrics: "
+            f"rounds={metrics.get('rounds')} accepted={metrics.get('accepted')} "
+            f"rejected={metrics.get('rejected')} "
+            f"prompt_tokens={metrics.get('prompt_tokens')} "
+            f"completion_tokens={metrics.get('completion_tokens')}"
+        )
+        paths = persist_generation(result, prefix=prefix, settings=settings)
 
-    prefix = out_prefix or f"phys10-ch{chapter}"
-    json_path = settings.exports_dir / f"{prefix}.json"
-    csv_path = settings.exports_dir / f"{prefix}.csv"
-    md_path = settings.exports_dir / f"{prefix}.md"
-    export_json(questions, json_path)
-    export_csv(questions, csv_path)
-    export_markdown(questions, md_path)
-    click.echo(f"JSON: {json_path}")
-    click.echo(f"CSV:  {csv_path}")
-    click.echo(f"MD:   {md_path}")
+    click.echo(f"JSON: {paths['json']}")
+    click.echo(f"CSV:  {paths['csv']}")
+    click.echo(f"MD:   {paths['md']}")
 
 
 @main.command("to-md")
@@ -122,6 +142,80 @@ def to_md_cmd(json_path: Path, out_path: Path | None, title: str | None) -> None
     dest = out_path or json_path.with_suffix(".md")
     export_markdown(questions, dest, title=title)
     click.echo(f"MD: {dest} ({len(questions)} questions)")
+
+
+@main.command("index-build")
+@click.option("--chapter", type=int, default=None, help="Chapter number (omit for all)")
+@click.option("--slug", default="physics10-riazi-110209", show_default=True)
+@click.option("--all", "build_all", is_flag=True, help="Build indexes for all known chapters")
+def index_build_cmd(chapter: int | None, slug: str, build_all: bool) -> None:
+    """Phase 2 (offline): build BM25 + TF-IDF indexes. Not used by generate."""
+    from darsamooz.retrieval import build_all_chapter_indexes, build_chapter_index
+
+    try:
+        if build_all or chapter is None:
+            results = build_all_chapter_indexes(book_slug=slug)
+            if not results:
+                raise click.ClickException("No chapter sections found. Run ingest first.")
+            for n, info in sorted(results.items()):
+                click.echo(
+                    f"ch{n}: sections={info['section_count']} "
+                    f"bm25={info['bm25']} tfidf={info['tfidf']}"
+                )
+        else:
+            info = build_chapter_index(slug, chapter)
+            click.echo(
+                f"ch{chapter}: sections={info['section_count']} "
+                f"bm25={info['bm25']} tfidf={info['tfidf']}"
+            )
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@main.command("retrieve")
+@click.option("--chapter", type=int, required=True)
+@click.option("--query", required=True, help="Persian search query")
+@click.option("--k", type=int, default=5, show_default=True)
+@click.option(
+    "--method",
+    type=click.Choice(["bm25", "tfidf"], case_sensitive=False),
+    default="bm25",
+    show_default=True,
+)
+@click.option("--slug", default="physics10-riazi-110209", show_default=True)
+def retrieve_cmd(chapter: int, query: str, k: int, method: str, slug: str) -> None:
+    """Phase 2 (offline): rank sections for a query. Not used by generate."""
+    from darsamooz.retrieval import retrieve_sections
+
+    try:
+        hits = retrieve_sections(
+            slug, chapter, query, k=k, method=method.lower()  # type: ignore[arg-type]
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not hits:
+        click.echo("No hits.")
+        return
+    for i, (sec, score) in enumerate(hits, start=1):
+        click.echo(f"{i}\t{score:.4f}\t{sec.id}\t{sec.title}")
+
+
+@main.command("db-sync")
+@click.option("--slug", default="physics10-riazi-110209", show_default=True)
+@click.option(
+    "--db",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="SQLite path (default: data/darsamooz.sqlite)",
+)
+def db_sync_cmd(slug: str, db: Path | None) -> None:
+    """Phase 2 (offline): sync sections + runs into SQLite. Not used by generate."""
+    from darsamooz.store import sync_from_filesystem
+
+    stats = sync_from_filesystem(db_path=db, book_slug=slug)
+    click.echo(
+        f"Synced sections={stats['sections']} runs={stats['runs']} db={stats['db']}"
+    )
 
 
 if __name__ == "__main__":

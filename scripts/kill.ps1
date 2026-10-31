@@ -51,7 +51,7 @@ if (Test-Path -LiteralPath $PidFile) {
     $text = Get-Content -LiteralPath $PidFile -Raw -Encoding UTF8
     Write-Host ("خواندن فایل PID: {0}" -f $PidFile)
     foreach ($line in ($text -split "`r?`n")) {
-        if ($line -match '^(launcher_pid|generate_pid)=(\d+)$') {
+        if ($line -match '^(launcher_pid|generate_pid|web_pid)=(\d+)$') {
             Stop-TrackedPid -ProcessId ([int]$Matches[2]) -reason $Matches[1]
         }
     }

@@ -19,7 +19,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+web = [
+  "fastapi>=0.115,<0.129",
+  "uvicorn[standard]>=0.32",
+]
+# Reserved for future neural embeddings; Phase 2 BM25/TF-IDF needs no extra deps.
+retrieval = []
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.4",
+  "fastapi>=0.115,<0.129",
+  "uvicorn[standard]>=0.32",
+]
 
 [project.scripts]
 darsamooz = "darsamooz.cli:main"

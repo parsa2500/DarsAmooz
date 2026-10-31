@@ -13,9 +13,14 @@ _VALID_PROVIDERS = frozenset({"gemini", "openrouter", "openai"})
 
 
 class LLMProvider(ABC):
+    last_usage: dict[str, int | None] | None = None
+
     @abstractmethod
     def complete_json(self, system: str, user: str) -> Any:
-        """Return parsed JSON from the model response."""
+        """Return parsed JSON from the model response.
+
+        Implementations may set ``last_usage`` with prompt/completion token counts.
+        """
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -47,6 +52,7 @@ class OpenAICompatibleProvider(LLMProvider):
         # Accessing .model raises if unset — intentional (no silent default).
         self._model = self.settings.model
         self._provider = provider
+        self.last_usage = None
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -87,6 +93,7 @@ class OpenAICompatibleProvider(LLMProvider):
             chat = self._post_chat(client, system, user)
             if chat.status_code < 400:
                 data = chat.json()
+                self.last_usage = _extract_usage(data)
                 try:
                     content = data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, TypeError) as exc:
@@ -101,7 +108,25 @@ class OpenAICompatibleProvider(LLMProvider):
                     )
                 return _parse_json_payload(content)
 
+            self.last_usage = None
             raise RuntimeError(self._format_error(chat, via="/chat/completions"))
+
+
+def _extract_usage(data: dict[str, Any]) -> dict[str, int | None]:
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
+    def _as_int(key: str) -> int | None:
+        val = usage.get(key)
+        try:
+            return int(val) if val is not None else None
+        except (TypeError, ValueError):
+            return None
+    return {
+        "prompt_tokens": _as_int("prompt_tokens"),
+        "completion_tokens": _as_int("completion_tokens"),
+        "total_tokens": _as_int("total_tokens"),
+    }
 
 
 def _parse_json_payload(content: str) -> Any:

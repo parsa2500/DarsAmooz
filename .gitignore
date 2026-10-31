@@ -30,6 +30,13 @@ data/extracted/*
 data/exports/*
 !data/exports/.gitkeep
 
+# Generation run history (local)
+data/runs/
+
+# Phase 2 offline SQLite (not used by generate)
+data/darsamooz.sqlite
+data/darsamooz.sqlite-*
+
 # OS / editor
 .DS_Store
 .idea/

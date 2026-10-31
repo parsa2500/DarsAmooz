@@ -117,10 +117,14 @@ def ingest_pdf(
     out_txt = settings.extracted_dir / f"{book_slug}.txt"
     text = extract_pdf_text(pdf_path, out_txt)
     chapters = split_chapters(text)
-    # Write per-chapter files for inspection
+    from darsamooz.sections import split_sections, write_sections
+
+    # Write per-chapter files + section maps for grounded generation
     for ch in chapters:
         p = settings.extracted_dir / f"{book_slug}-ch{ch.number}.txt"
         p.write_text(ch.text, encoding="utf-8")
+        sections = split_sections(ch)
+        write_sections(sections, book_slug, ch.number, settings)
     return chapters
 
 

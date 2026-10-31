@@ -29,10 +29,14 @@ python scripts/download_physics10.py
 ```
 
 ### استفاده
-### لانچر ویندوز
-- اجرای تعاملی: دوبارکلیک روی میانبر دسکتاپ **DarsAmooz - اجرا** یا `scripts\launch.bat`
-- توقف امن فقط فرایندهای درس‌آموز: **DarsAmooz - توقف** یا `scripts\kill.bat`
+### لانچر ویندوز (رابط وب محلی)
+- نصب وابستگی وب (یک‌بار): `pip install -e ".[web]"` (در `.[dev]` هم هست)
+- اجرا: دوبارکلیک روی میانبر **DarsAmooz - اجرا** یا `scripts\launch.bat` — سرور روی `http://127.0.0.1:8765` بالا می‌آید و مرورگر باز می‌شود
+- در UI: انتخاب فصل/تعداد، تولید، پیش‌نمایش سوالات، کپی مسیر خروجی
+- توقف: **DarsAmooz - توقف** یا `scripts\kill.bat` (یا Ctrl+C در پنجرهٔ لانچر)
 - ساخت دوبارهٔ میانبرها: `powershell -File scripts\create-desktop-shortcuts.ps1`
+- اجرا بدون مرورگر / با پیش‌پر کردن فرم:
+  `powershell -File scripts\launch.ps1 -Chapter 1 -Count 5 -Sample -NoBrowser`
 
 ```bash
 cp .env.example .env
@@ -53,6 +57,19 @@ darsamooz to-md samples/physics10_ch1_gemini.json --out samples/physics10_ch1_ge
 
 خروجی‌های هر `generate` در `data/exports/` به صورت JSON و CSV و Markdown (`.md`) ذخیره می‌شوند.
 
+هر تولید یک **run** در `data/runs/{run_id}/` هم می‌نویسد (`request.json`, `units_used.json`, `items.jsonl`, `metrics.json`, کپی export). بعد از `ingest`، نقشهٔ زیرفصل‌ها در `data/extracted/{slug}/chN/sections.json` ذخیره می‌شود تا تولید روی یونیت‌های کتاب و با verify نقل‌قول (`source_refs`) انجام شود.
+
+### فاز ۲ — بازیابی / SQLite (هنوز به generate وصل نیست)
+ماژول‌های BM25 و TF-IDF و ذخیرهٔ SQLite آمادهٔ استفاده‌اند ولی **در مسیر تولید سوال صدا زده نمی‌شوند**. برای آزمایش دستی:
+
+```bash
+darsamooz index-build --all
+darsamooz retrieve --chapter 1 --query "مدلسازی" --method bm25
+darsamooz db-sync
+```
+
+ایندکس‌ها کنار sections: `data/extracted/{slug}/chN/index_bm25.json` و `index_tfidf.json`. دیتابیس اختیاری: `data/darsamooz.sqlite`.
+
 ### نکته حقوقی
 PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و برنامه‌ریزی آموزشی است و **داخل ریپو commit نمی‌شود**. فقط اسکریپت دانلود و manifest نگه داشته می‌شود.
 
@@ -60,12 +77,17 @@ PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و ب
 
 ## English
 
+### Windows local web UI
+Install web extras (`pip install -e ".[web]"`), then run `scripts\launch.bat` (or the desktop shortcut). That starts `python -m darsamooz.web` on `http://127.0.0.1:8765` and opens the browser. Stop with `scripts\kill.bat`. CLI `generate` remains available for scripting.
+
 ### Pipeline
 1. **Ingest** — `pdftotext` (poppler) → cleaned Persian text → chapter split  
 2. **Chunk** — paragraph-aware chunks for LLM context  
 3. **Generate** — Gemini / OpenRouter / OpenAI-compatible API; questions are grounded in extracted chapter PDF text  
 4. **Validate** — exactly 4 options, one correct index, explanation, chapter, difficulty  
-5. **Export** — JSON + CSV (UTF-8 BOM for Excel) + RTL Persian Markdown (`.md`, answers in `<details>`)
+5. **Export** — JSON + CSV (UTF-8 BOM for Excel) + RTL Persian Markdown (`.md`, answers in `<details>`), plus a run folder under `data/runs/` with unit coverage and token metrics when the API reports usage. Ingest also writes `data/extracted/{slug}/chN/sections.json` for subsection-grounded generation.
+
+**Phase 2 retrieval/store (not wired into generate):** `darsamooz index-build`, `darsamooz retrieve`, and `darsamooz db-sync` build BM25/TF-IDF indexes and an optional SQLite mirror. The planner still uses round-robin over sections.
 
 Convert an existing JSON export:
 ```bash

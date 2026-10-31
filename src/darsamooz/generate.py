@@ -2,49 +2,35 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from darsamooz.chunking import chunk_chapter
 from darsamooz.config import Settings, get_settings
-from darsamooz.ingest import PHYSICS10_CHAPTERS, load_extracted_chapters
+from darsamooz.ingest import PHYSICS10_CHAPTERS
 from darsamooz.llm import LLMProvider, get_provider
-from darsamooz.models import Question
+from darsamooz.models import Question, Section
+from darsamooz.runs import RunWriter
+from darsamooz.sections import load_sections
 from darsamooz.validate import validate_batch, validate_question_dict
 
-SYSTEM_PROMPT = """You are an exam-item writer for Iranian grade-10 physics (math track).
-Create multiple-choice questions (تست چهارگزینه‌ای) ONLY from the provided textbook source text.
-Return ONLY valid JSON:
-{
-  "questions": [
-    {
-      "stem": "Persian question text",
-      "options": ["opt1", "opt2", "opt3", "opt4"],
-      "correct_index": 0,
-      "explanation": "short correct Persian explanation grounded in the source",
-      "difficulty": "easy|medium|hard",
-      "section": "subsection name if known",
-      "tags": ["tag"],
-      "source_refs": ["verbatim short quote from the source text that supports the answer"]
-    }
-  ]
-}
-Hard rules:
-- Use ONLY facts, definitions, formulas, and examples present in the source text
-- Exactly 4 unique options; exactly one fully correct answer
-- correct_index must be 0..3 and match the correct option
-- Distractors must be plausible but wrong
-- Avoid "all of the above" / "none of the above"
-- Keep formulas, units, and numbers faithful to the source; do not invent outside facts
-- Write stem and explanation in clear Persian (SI unit symbols like m, kg, s are OK)
-- Each item must be understandable without seeing the textbook
-- Do NOT repeat the same scenario/numbers across items
-- Aim for a mix of difficulties when asked for several items
-- source_refs MUST quote a short continuous phrase that actually appears in the source text
-"""
+SYSTEM_PROMPT = """You write Iranian grade-10 physics MCQs (تست چهارگزینه‌ای) ONLY from the given unit text.
+Return ONLY JSON: {"questions":[{"stem":"...","options":["a","b","c","d"],"correct_index":0,"explanation":"...","difficulty":"easy|medium|hard","section":"...","source_refs":["verbatim quote from unit"]}]}
+Rules: exactly 4 unique options; one correct; Persian stem/explanation; no invented facts; source_refs must be a short continuous phrase copied from the unit text."""
 
 
 _ARABIC_DIACRITICS = re.compile(r"[\u064B-\u065F\u0670]")
 _NON_WORD = re.compile(r"[^\w\u0600-\u06FF]+", re.UNICODE)
+
+EARLY_STOP_EMPTY_ROUNDS = 3
+BATCH_PER_UNIT = 2
+
+
+@dataclass
+class GenerationResult:
+    questions: list[Question]
+    run: RunWriter
+    metrics: dict[str, Any] = field(default_factory=dict)
 
 
 def _normalize_stem(stem: str) -> str:
@@ -79,14 +65,38 @@ def _chapter_title(num: int) -> str:
     return f"فصل {num}"
 
 
-def _build_chunk_prompt(chapter_num: int, title: str, chunk: str, count: int) -> str:
+def _build_unit_prompt(
+    chapter_num: int,
+    chapter_title: str,
+    section: Section,
+    count: int,
+) -> str:
     return (
-        f"کتاب: فیزیک (۱) پایه دهم رشته ریاضی و فیزیک (کد ۱۱۰۲۰۹)\n"
-        f"فصل {chapter_num}: {title}\n"
-        f"از متن منبع زیر دقیقاً {count} تست چهارگزینه‌ای بساز. "
-        f"فقط از همین متن استفاده کن؛ چیزی از بیرون اضافه نکن.\n\n"
-        f"--- متن منبع ---\n{chunk}\n--- پایان متن منبع ---\n"
+        f"کتاب: فیزیک (۱) دهم ریاضی (۱۱۰۲۰۹)\n"
+        f"فصل {chapter_num}: {chapter_title}\n"
+        f"یونیت: {section.id} — {section.title}\n"
+        f"دقیقاً {count} تست بساز؛ فقط از متن یونیت.\n\n"
+        f"--- یونیت ---\n{section.text}\n--- پایان ---\n"
     )
+
+
+def plan_unit_schedule(sections: list[Section], count: int) -> list[tuple[Section, int]]:
+    """Round-robin units; each visit asks for up to BATCH_PER_UNIT questions."""
+    usable = [s for s in sections if len((s.text or "").strip()) >= 80]
+    if not usable:
+        return []
+    schedule: list[tuple[Section, int]] = []
+    remaining = count
+    idx = 0
+    # Cap scheduled rounds: enough to cover count with slack for rejects
+    max_slots = max(count * 2, len(usable) * 2)
+    while remaining > 0 and len(schedule) < max_slots:
+        sec = usable[idx % len(usable)]
+        batch = min(BATCH_PER_UNIT, remaining)
+        schedule.append((sec, batch))
+        remaining -= batch
+        idx += 1
+    return schedule
 
 
 def generate_from_chapter(
@@ -97,77 +107,256 @@ def generate_from_chapter(
     settings: Settings | None = None,
     book_slug: str = "physics10-riazi-110209",
 ) -> list[Question]:
+    """Back-compat wrapper: returns questions only."""
+    return generate_from_chapter_with_run(
+        chapter_num,
+        count=count,
+        provider=provider,
+        settings=settings,
+        book_slug=book_slug,
+    ).questions
+
+
+def generate_from_chapter_with_run(
+    chapter_num: int,
+    count: int = 10,
+    *,
+    provider: LLMProvider | None = None,
+    settings: Settings | None = None,
+    book_slug: str = "physics10-riazi-110209",
+) -> GenerationResult:
     settings = settings or get_settings()
-    chapters = {c.number: c for c in load_extracted_chapters(book_slug, settings)}
-    if chapter_num not in chapters:
+    sections = load_sections(book_slug, chapter_num, settings)
+    if not sections:
         raise FileNotFoundError(
-            f"Chapter {chapter_num} not found. Run `darsamooz ingest` first."
+            f"No sections for chapter {chapter_num}. Run `darsamooz ingest` first."
         )
-    chapter = chapters[chapter_num]
-    chunks = chunk_chapter(chapter)
-    if not chunks:
-        raise RuntimeError(
-            f"Chapter {chapter_num} has no extracted text. Re-run ingest on the PDF."
-        )
+
+    title = _chapter_title(chapter_num)
+    schedule = plan_unit_schedule(sections, count)
+    if not schedule:
+        raise RuntimeError(f"Chapter {chapter_num} has no usable section text.")
 
     provider = provider or get_provider(settings)
-    title = chapter.title or _chapter_title(chapter_num)
+    model_name: str | None = None
+    try:
+        model_name = settings.model
+    except RuntimeError:
+        model_name = None
+    run = RunWriter.create(
+        chapter_num,
+        settings=settings,
+        request={
+            "book_slug": book_slug,
+            "count": count,
+            "sample": False,
+            "provider": settings.provider_name,
+            "model": model_name,
+            "units_scheduled": len(schedule),
+        },
+    )
+
     prefix = f"phys10-ch{chapter_num}"
-    collected: list[dict] = []
+    questions: list[Question] = []
     accepted_stems: list[str] = []
-    max_rounds = max(len(chunks) * 2, (count + 3) // 4 * 3)
     last_error: Exception | None = None
+    empty_streak = 0
+    rounds = 0
+    rejected = 0
+    prompt_tokens = 0
+    completion_tokens = 0
+    tokens_known = False
+    early_stop = False
+
+    # Extra passes over schedule if rejects leave us short
+    max_rounds = max(len(schedule) * 2, count * 2)
 
     for i in range(max_rounds):
-        if len(collected) >= count:
+        if len(questions) >= count:
             break
-        chunk = chunks[i % len(chunks)]
-        batch = min(4, count - len(collected))
-        user = _build_chunk_prompt(chapter_num, title, chunk, batch)
+        sec, batch = schedule[i % len(schedule)]
+        batch = min(batch, count - len(questions))
+        rounds += 1
+        run.record_unit(sec.id, sec.title, len(sec.text))
+        user = _build_unit_prompt(chapter_num, title, sec, batch)
         try:
             data = provider.complete_json(SYSTEM_PROMPT, user)
+            usage = getattr(provider, "last_usage", None) or {}
+            if usage.get("prompt_tokens") is not None:
+                tokens_known = True
+                prompt_tokens += int(usage["prompt_tokens"] or 0)
+            if usage.get("completion_tokens") is not None:
+                tokens_known = True
+                completion_tokens += int(usage["completion_tokens"] or 0)
         except Exception as exc:
             last_error = exc
-            # Do not silently switch models/providers; surface after retries exhausted.
+            empty_streak += 1
+            run.append_item(
+                {
+                    "status": "rejected",
+                    "reason": f"llm_error: {exc}",
+                    "section_id": sec.id,
+                }
+            )
+            rejected += 1
+            if empty_streak >= EARLY_STOP_EMPTY_ROUNDS:
+                early_stop = True
+                break
             continue
+
         items = data.get("questions", data if isinstance(data, list) else [])
         if not isinstance(items, list):
             items = []
+
+        accepted_this_round = 0
         for raw in items:
             if not isinstance(raw, dict):
+                rejected += 1
+                run.append_item(
+                    {
+                        "status": "rejected",
+                        "reason": "not_a_dict",
+                        "section_id": sec.id,
+                    }
+                )
                 continue
+            raw = {**raw, "section_id": sec.id, "section": raw.get("section") or sec.title}
             stem = str(raw.get("stem") or raw.get("question") or "")
             if any(_stems_too_similar(stem, prev) for prev in accepted_stems):
+                rejected += 1
+                run.append_item(
+                    {
+                        "status": "rejected",
+                        "reason": "similar_stem",
+                        "section_id": sec.id,
+                        "stem": stem[:120],
+                    }
+                )
                 continue
-            collected.append(raw)
-            accepted_stems.append(stem)
-            if len(collected) >= count:
-                break
-
-    questions: list[Question] = []
-    for raw in collected:
-        if len(questions) >= count:
-            break
-        try:
-            qid = raw.get("id") or f"{prefix}-q{len(questions)+1:03d}"
-            q = validate_question_dict(
-                raw, chapter=chapter_num, chapter_title=title, qid=qid
-            )
+            try:
+                qid = raw.get("id") or f"{prefix}-q{len(questions)+1:03d}"
+                q = validate_question_dict(
+                    raw,
+                    chapter=chapter_num,
+                    chapter_title=title,
+                    qid=qid,
+                    unit_text=sec.text,
+                    require_grounding=True,
+                )
+            except Exception as exc:
+                rejected += 1
+                run.append_item(
+                    {
+                        "status": "rejected",
+                        "reason": str(exc),
+                        "section_id": sec.id,
+                        "stem": stem[:120],
+                    }
+                )
+                continue
             if any(_stems_too_similar(q.stem, prev.stem) for prev in questions):
+                rejected += 1
+                run.append_item(
+                    {
+                        "status": "rejected",
+                        "reason": "similar_stem_validated",
+                        "section_id": sec.id,
+                        "id": q.id,
+                    }
+                )
                 continue
             questions.append(q)
-        except Exception:
-            continue
+            accepted_stems.append(q.stem)
+            accepted_this_round += 1
+            run.append_item(
+                {
+                    "status": "accepted",
+                    "id": q.id,
+                    "section_id": sec.id,
+                    "stem": q.stem[:160],
+                }
+            )
+            if len(questions) >= count:
+                break
+
+        if accepted_this_round == 0:
+            empty_streak += 1
+            if empty_streak >= EARLY_STOP_EMPTY_ROUNDS:
+                early_stop = True
+                break
+        else:
+            empty_streak = 0
+
+    metrics: dict[str, Any] = {
+        "rounds": rounds,
+        "accepted": len(questions),
+        "rejected": rejected,
+        "requested": count,
+        "early_stop": early_stop,
+        "prompt_tokens": prompt_tokens if tokens_known else None,
+        "completion_tokens": completion_tokens if tokens_known else None,
+        "units_touched": len({u["section_id"] for u in run.units_used}),
+    }
+    if last_error:
+        metrics["last_error"] = str(last_error)
+    run.write_metrics(metrics)
 
     if len(questions) < count:
         detail = f" last_error={last_error}" if last_error else ""
         raise RuntimeError(
             f"Only generated {len(questions)}/{count} valid book-grounded questions "
-            f"for chapter {chapter_num} after {max_rounds} rounds "
-            f"(provider={settings.provider_name}, model={settings.model})."
+            f"for chapter {chapter_num} after {rounds} rounds "
+            f"(early_stop={early_stop}, provider={settings.provider_name}, "
+            f"model={model_name}, run_id={run.run_id})."
             f"{detail}"
         )
-    return questions[:count]
+
+    return GenerationResult(
+        questions=questions[:count],
+        run=run,
+        metrics=metrics,
+    )
+
+
+def persist_generation(
+    result: GenerationResult,
+    *,
+    prefix: str,
+    settings: Settings | None = None,
+) -> dict[str, Path]:
+    settings = settings or get_settings()
+    return result.run.finalize_exports(result.questions, prefix=prefix, settings=settings)
+
+
+def persist_sample_run(
+    questions: list[Question],
+    *,
+    chapter: int,
+    prefix: str,
+    settings: Settings | None = None,
+) -> tuple[dict[str, Path], RunWriter]:
+    settings = settings or get_settings()
+    run = RunWriter.create(
+        chapter,
+        settings=settings,
+        request={"count": len(questions), "sample": True, "provider": None, "model": None},
+    )
+    for q in questions:
+        run.append_item({"status": "accepted", "id": q.id, "sample": True, "stem": q.stem[:160]})
+    run.write_metrics(
+        {
+            "rounds": 0,
+            "accepted": len(questions),
+            "rejected": 0,
+            "requested": len(questions),
+            "early_stop": False,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "sample": True,
+        }
+    )
+    paths = run.finalize_exports(questions, prefix=prefix, settings=settings)
+    return paths, run
 
 
 def load_sample_questions(path: Path | None = None) -> list[Question]:
@@ -179,4 +368,5 @@ def load_sample_questions(path: Path | None = None) -> list[Question]:
         chapter=1,
         chapter_title=_chapter_title(1),
         id_prefix="phys10-ch1-sample",
+        require_grounding=False,
     )

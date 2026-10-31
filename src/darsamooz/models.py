@@ -55,6 +55,18 @@ class Chapter(BaseModel):
     text: str = ""
 
 
+class Section(BaseModel):
+    """A textbook subsection unit used for grounded generation."""
+
+    id: str = Field(..., description="e.g. ch1-s02 or ch1-u003")
+    chapter: int = Field(..., ge=1)
+    title: str = ""
+    text: str = ""
+    order: int = 0
+    char_start: int = 0
+    char_end: int = 0
+
+
 class TextbookManifest(BaseModel):
     book_code: str
     title: str

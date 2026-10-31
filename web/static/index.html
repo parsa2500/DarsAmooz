@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>درس‌آموز</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <!--
+    THESIS: Operator desk for grounded MCQ generation — worksheet geometry, not a marketing hero.
+    OWN-WORLD: Cool slate paper, deep lab-teal ink, Vazirmatn, ruled-panel rhythm.
+    STORY: Pick chapter and count, run generate, read items and export paths in place.
+    FIRST VIEWPORT: Brand mark + book title, generate form, status strip; preview below.
+    FORM: Exam-desk Operate surface (seed: plan-local-web).
+    FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+  -->
+  <div class="page">
+    <header class="masthead">
+      <div class="brand-block">
+        <p class="brand">درس‌آموز</p>
+        <p class="brand-en" lang="en">DarsAmooz</p>
+      </div>
+      <div class="masthead-meta">
+        <p id="bookTitle" class="book-title">…</p>
+        <p id="providerLine" class="provider-line"></p>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel generate-panel" aria-labelledby="genHeading">
+        <h1 id="genHeading">تولید تست</h1>
+        <p class="lede">از متن فصل کتاب، تست چهارگزینه‌ای بسازید و خروجی را همین‌جا ببینید.</p>
+
+        <form id="generateForm" class="gen-form">
+          <div class="field">
+            <label for="chapter">فصل</label>
+            <select id="chapter" name="chapter" required></select>
+          </div>
+          <div class="field">
+            <label for="count">تعداد سؤال</label>
+            <input id="count" name="count" type="number" min="1" max="100" value="10" required />
+          </div>
+          <div class="field field-toggle">
+            <label class="toggle">
+              <input id="sample" name="sample" type="checkbox" />
+              <span class="toggle-ui" aria-hidden="true"></span>
+              <span class="toggle-label">حالت نمونه <span class="hint">(بدون API، فقط فصل ۱)</span></span>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit" id="btnGenerate" class="btn btn-primary">شروع تولید</button>
+            <button type="button" id="btnCancel" class="btn btn-ghost" disabled>لغو</button>
+          </div>
+        </form>
+
+        <div id="statusStrip" class="status-strip" data-state="idle" role="status" aria-live="polite">
+          <span id="statusDot" class="status-dot" aria-hidden="true"></span>
+          <span id="statusText">آمادهٔ تولید</span>
+        </div>
+        <pre id="logBox" class="log-box" hidden></pre>
+      </section>
+
+      <section class="panel preview-panel" aria-labelledby="previewHeading">
+        <div class="preview-head">
+          <h2 id="previewHeading">پیش‌نمایش سوالات</h2>
+          <div id="exportActions" class="export-actions" hidden>
+            <button type="button" id="btnCopyJson" class="btn btn-small">کپی مسیر JSON</button>
+            <button type="button" id="btnCopyDir" class="btn btn-small">کپی پوشه خروجی</button>
+          </div>
+        </div>
+        <p id="previewEmpty" class="empty">هنوز خروجی‌ای نیست. بعد از تولید، سوالات اینجا نمایش داده می‌شوند.</p>
+        <p id="pathsLine" class="paths-line" hidden></p>
+        <ol id="questionList" class="question-list" hidden></ol>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span id="versionLine"></span>
+      <span class="foot-sep" aria-hidden="true">·</span>
+      <span>فقط روی همین رایانه — بدون سامانه آزمون</span>
+    </footer>
+  </div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
