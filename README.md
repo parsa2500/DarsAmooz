@@ -80,7 +80,7 @@ There is **no silent model or syllabus fallback**. If the configured provider/mo
 ### Sample output
 - `samples/physics10_ch1_sample.json` — **5 hand-written SAMPLE** questions (no API key: `darsamooz generate --chapter 1 --sample`).
 - `samples/physics10_ch1_gemini.json` / `.csv` — **20 Gemini-generated** chapter-1 questions grounded in book text.
-- `samples/physics10_ch1_openrouter.json` / `.csv` — small OpenRouter free-model sample (when generated).
+- `samples/physics10_ch1_openrouter.json` / `.csv` — **5 OpenRouter** chapter-1 questions (`OPENROUTER_MODEL`, free `:free` pool).
 
 ### Tests
 ```bash
