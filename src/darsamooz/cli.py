@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import click
@@ -11,10 +12,22 @@ from darsamooz.generate import generate_from_chapter, load_sample_questions
 from darsamooz.ingest import PHYSICS10_CHAPTERS, ingest_pdf
 
 
+def _configure_stdio() -> None:
+    """Avoid UnicodeEncodeError on Windows cp1252 consoles when printing Persian."""
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 @click.group()
 @click.version_option(__version__, prog_name="darsamooz")
 def main() -> None:
     """درس‌آموز — تولید تست چهارگزینه‌ای از PDF کتاب درسی."""
+    _configure_stdio()
 
 
 @main.command("chapters")
@@ -62,7 +75,11 @@ def generate_cmd(chapter: int, count: int, out_prefix: str | None, sample: bool)
             raise click.ClickException(
                 "AGENTROUTER_API_KEY (or OPENAI_API_KEY) missing. Set it in .env, or pass --sample for demo output."
             )
-        questions = generate_from_chapter(chapter, count=count, settings=settings)
+        try:
+            questions = generate_from_chapter(chapter, count=count, settings=settings)
+        except RuntimeError as exc:
+            # Surface provider errors (content-blocked, unauthorized, no channel) clearly.
+            raise click.ClickException(str(exc)) from exc
         click.echo(f"Generated {len(questions)} questions.")
 
     prefix = out_prefix or f"phys10-ch{chapter}"

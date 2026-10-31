@@ -59,6 +59,10 @@ PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و ب
 See `.env.example`. Default provider is **AgentRouter** (`AGENTROUTER_API_KEY`, `AGENTROUTER_BASE_URL`, `AGENTROUTER_MODEL`).  
 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` still work as fallbacks. Any OpenAI-compatible endpoint is fine.
 
+### AgentRouter notes
+- Set `AGENTROUTER_MODEL` to the **exact** model id (e.g. `deepseek-v4.1-flash`). There is **no silent model fallback**.
+- Generation sends the **extracted chapter PDF text** to the model. If the gateway returns `content-blocked` on Persian textbook chunks, darsamooz raises that error instead of substituting a syllabus workaround.
+
 ### Sample output
 - `samples/physics10_ch1_sample.json` — **5 hand-written SAMPLE** questions (no API key needed: `darsamooz generate --chapter 1 --sample`).
 - `samples/physics10_ch1_generated.json` / `.csv` — **20 LLM-generated** chapter-1 questions (AgentRouter).
