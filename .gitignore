@@ -50,3 +50,13 @@ data/textbooks/*.clean.txt
 # Launcher runtime
 .darsamooz.pid
 
+
+# Accidental root shortcut copies (desktop shortcuts live under Desktop)
+/*.lnk
+DarsAmooz - *.lnk
+
+
+# Keep client export mapping profiles
+!data/export_profiles/
+!data/export_profiles/**
+

@@ -81,7 +81,7 @@ def test_persist_sample_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("darsamooz.generate.get_settings", lambda: settings)
 
     qs = load_sample_questions()[:2]
-    paths, run = persist_sample_run(qs, chapter=1, prefix="phys10-ch1", settings=settings)
+    paths, run, _qs = persist_sample_run(qs, chapter=1, prefix="phys10-ch1", settings=settings)
     assert run.root.is_dir()
     assert (run.root / "request.json").is_file()
     assert (run.root / "metrics.json").is_file()

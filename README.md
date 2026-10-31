@@ -70,6 +70,17 @@ darsamooz db-sync
 
 ایندکس‌ها کنار sections: `data/extracted/{slug}/chN/index_bm25.json` و `index_tfidf.json`. دیتابیس اختیاری: `data/darsamooz.sqlite`.
 
+### بازبینی، تأیید جواب، تعادل و خروجی مشتری (MVP)
+- **بازبینی:** هر سؤال وضعیت `pending` / `approved` / `rejected` / `needs_review` دارد. در UI یا با `darsamooz review` تأیید/رد/ویرایش کنید. فقط تأییدشده‌ها: `darsamooz export-approved`.
+- **تأیید جواب:** بعد از تولید، یک پاس دوم LLM کور سؤال را حل می‌کند (`--verify` پیش‌فرض روشن؛ `--no-verify` برای خاموش). اختلاف یا ابهام → `needs_review` (حذف نمی‌شود). مدل جدا: `VERIFY_MODEL` در `.env`.
+- **تعادل:** گزینه‌ی درست به‌صورت قطعی روی الف–د پخش می‌شود (`--balance-answers`). ترکیب سختی: `--difficulty-mix easy=30,medium=50,hard=20`. توزیع در `metrics.json` و UI.
+- **خروجی مشتری:** پروفایل نگاشت در `data/export_profiles/` (فعلاً فقط `generic`). وقتی فرمت import سایت مشتری رسید، یک JSON جدید اضافه کنید — فرمت مشتری را از خودمان اختراع نمی‌کنیم.
+  ```bash
+  darsamooz profiles
+  darsamooz export-client data/exports/phys10-ch1.json --profile generic --out data/exports/phys10-ch1.generic.json
+  darsamooz generate --chapter 1 --count 10 --verify --difficulty-mix easy=30,medium=50,hard=20 --export-profile generic
+  ```
+
 ### نکته حقوقی
 PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و برنامه‌ریزی آموزشی است و **داخل ریپو commit نمی‌شود**. فقط اسکریپت دانلود و manifest نگه داشته می‌شود.
 
@@ -93,6 +104,16 @@ Convert an existing JSON export:
 ```bash
 darsamooz to-md path/to/questions.json --out path/to/questions.md
 ```
+
+### Review, verify, balance, client export (MVP)
+- **Review:** each question has `pending` / `approved` / `rejected` / `needs_review`. Approve/reject/edit in the web UI or via `darsamooz review`. Export approved-only with `darsamooz export-approved`.
+- **Answer verification:** after generation a blind second LLM pass solves each item (`--verify` on by default). Mismatch/ambiguity → `needs_review` (never silently dropped). Optional `VERIFY_MODEL` in `.env`.
+- **Balance:** correct options are deterministically redistributed over A–D (`--balance-answers`). Steer difficulty with `--difficulty-mix easy=30,medium=50,hard=20`. Distributions land in `metrics.json` and the UI.
+- **Client export:** mapping profiles live under `data/export_profiles/` (shipped: `generic` only). When the client's exam-site import format arrives, add a new profile JSON — do not invent their schema.
+  ```bash
+  darsamooz profiles
+  darsamooz export-client path/to/questions.json --profile generic --out path/to/mapped.json --approved-only
+  ```
 
 ### Config
 See `.env.example`. Select provider with `LLM_PROVIDER=gemini` | `openrouter` | `openai`.
