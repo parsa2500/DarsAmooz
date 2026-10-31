@@ -10,6 +10,7 @@ from typing import Any
 from darsamooz.config import Settings, get_settings
 from darsamooz.export import export_csv, export_json, export_markdown
 from darsamooz.models import Question
+from darsamooz.review import filter_by_review_status, write_reviews_sidecar
 
 
 def new_run_id(chapter: int) -> str:
@@ -70,7 +71,6 @@ class RunWriter:
 
     def write_units(self) -> None:
         path = self.root / "units_used.json"
-        # Unique by section_id preserving order
         seen: set[str] = set()
         unique: list[dict[str, Any]] = []
         for u in self.units_used:
@@ -95,24 +95,39 @@ class RunWriter:
         *,
         prefix: str,
         settings: Settings | None = None,
+        approved_only: bool = False,
     ) -> dict[str, Path]:
         settings = settings or get_settings()
         exports = Path(settings.exports_dir)
         exports.mkdir(parents=True, exist_ok=True)
         run_export = self.root / "export"
 
+        # Full set always kept under the run folder for review tooling.
+        export_json(questions, run_export / f"{prefix}.full.json")
+        write_reviews_sidecar(self.root, questions)
+
+        if approved_only:
+            to_write = filter_by_review_status(questions, approved_only=True)
+        else:
+            to_write = list(questions)
+
         paths = {
             "json": exports / f"{prefix}.json",
             "csv": exports / f"{prefix}.csv",
             "md": exports / f"{prefix}.md",
         }
-        export_json(questions, paths["json"])
-        export_csv(questions, paths["csv"])
-        export_markdown(questions, paths["md"])
+        export_json(to_write, paths["json"])
+        export_csv(to_write, paths["csv"])
+        if to_write:
+            export_markdown(to_write, paths["md"])
+        else:
+            paths["md"].write_text(
+                '<div dir="rtl" lang="fa">\n\n# (no questions)\n\n</div>\n',
+                encoding="utf-8",
+            )
 
-        for key, src in paths.items():
-            dest = run_export / src.name
-            shutil.copy2(src, dest)
+        for _key, src in paths.items():
+            shutil.copy2(src, run_export / src.name)
 
         self.write_units()
         index_path = Path(settings.data_dir) / "runs" / "index.jsonl"
@@ -121,9 +136,10 @@ class RunWriter:
             "run_id": self.run_id,
             "chapter": self.chapter,
             "prefix": prefix,
-            "question_count": len(questions),
+            "question_count": len(to_write),
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "path": str(self.root),
+            "approved_only": approved_only,
         }
         with index_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(index_row, ensure_ascii=False) + "\n")

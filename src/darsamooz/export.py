@@ -13,6 +13,12 @@ _DIFFICULTY_FA = {
     "medium": "متوسط",
     "hard": "سخت",
 }
+_REVIEW_FA = {
+    "pending": "در انتظار",
+    "approved": "تأیید",
+    "rejected": "رد",
+    "needs_review": "نیاز به بازبینی",
+}
 
 
 def export_json(questions: list[Question], path: Path) -> Path:
@@ -42,6 +48,8 @@ def export_csv(questions: list[Question], path: Path) -> Path:
         "correct_letter",
         "explanation",
         "difficulty",
+        "review_status",
+        "verifier_agrees",
         "tags",
         "is_sample",
     ]
@@ -66,6 +74,10 @@ def export_csv(questions: list[Question], path: Path) -> Path:
                     "correct_letter": letters[q.correct_index],
                     "explanation": q.explanation,
                     "difficulty": q.difficulty.value,
+                    "review_status": q.review_status.value,
+                    "verifier_agrees": q.verifier_agrees
+                    if q.verifier_agrees is not None
+                    else "",
                     "tags": "|".join(q.tags),
                     "is_sample": q.is_sample,
                 }
@@ -118,6 +130,7 @@ def render_markdown(
         correct_text = q.options[q.correct_index]
         refs = q.source_refs or []
         quote = " / ".join(r.strip() for r in refs if str(r).strip()) or "—"
+        status = _REVIEW_FA.get(q.review_status.value, q.review_status.value)
 
         lines.append("<details>")
         lines.append("<summary>پاسخ و توضیح</summary>")
@@ -127,6 +140,8 @@ def render_markdown(
         lines.append(f"**توضیح:** {q.explanation.strip()}")
         lines.append("")
         lines.append(f"**سطح دشواری:** {_difficulty_fa(q)}")
+        lines.append("")
+        lines.append(f"**وضعیت بازبینی:** {status}")
         lines.append("")
         lines.append(f"**نقل از متن کتاب:** «{quote}»")
         lines.append("")
@@ -156,6 +171,11 @@ def export_markdown(
 
 
 def load_questions_from_json(path: Path) -> list[Question]:
+    from darsamooz.review import load_questions_payload
+
+    _, questions = load_questions_payload(path)
+    if questions:
+        return questions
     data = json.loads(path.read_text(encoding="utf-8"))
     items = data["questions"] if isinstance(data, dict) else data
     if not items:

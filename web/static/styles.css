@@ -569,3 +569,34 @@ body {
     transition: none;
   }
 }
+
+
+/* --- MVP review / edit / verify --- */
+.preview-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
+.preview-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.check.compact { margin: 0; font-size: 0.9rem; }
+.q { border: 1px solid var(--border, #e2e8f0); border-radius: 12px; padding: 1rem; margin: 0.75rem 0; background: var(--card-bg, #fff); }
+.q header { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+.q-num { font-weight: 700; background: #0f766e; color: #fff; border-radius: 999px; width: 1.75rem; height: 1.75rem; display: inline-flex; align-items: center; justify-content: center; font-size: 0.85rem; }
+.pill { font-size: 0.75rem; padding: 0.15rem 0.55rem; border-radius: 999px; background: #e2e8f0; }
+.pill.status-approved { background: #bbf7d0; color: #14532d; }
+.pill.status-rejected { background: #fecaca; color: #7f1d1d; }
+.pill.status-needs_review { background: #fde68a; color: #78350f; }
+.pill.status-pending { background: #e2e8f0; color: #334155; }
+.q .stem { font-size: 1.05rem; margin: 0.4rem 0 0.6rem; line-height: 1.7; }
+.q .opts { list-style: none; padding: 0; margin: 0.4rem 0; }
+.q .opts li { padding: 0.35rem 0.6rem; border-radius: 8px; margin: 0.2rem 0; background: #f8fafc; }
+.q .opts li.correct { background: #ecfdf5; border: 1px solid #6ee7b7; font-weight: 600; }
+.q .expl { font-size: 0.92rem; color: #334155; }
+.q .verify.warn { background: #fffbeb; border: 1px solid #fbbf24; padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.9rem; }
+.q-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+.btn.tiny { padding: 0.35rem 0.7rem; font-size: 0.85rem; }
+.btn.tiny.ok { background: #16a34a; color: #fff; border-color: #15803d; }
+.edit-panel { margin-top: 0.75rem; display: grid; gap: 0.5rem; padding: 0.75rem; background: #f8fafc; border-radius: 10px; }
+.edit-panel.hidden { display: none; }
+.edit-panel textarea, .edit-panel input, .edit-panel select { width: 100%; font: inherit; padding: 0.4rem 0.5rem; border-radius: 8px; border: 1px solid #cbd5e1; }
+.edit-panel label { display: grid; gap: 0.25rem; font-size: 0.85rem; color: #475569; }
+.q-id { font-size: 0.75rem; margin-inline-start: auto; }
+.hint.ok { color: #166534; }
+.hint.warn { color: #9a3412; }
+.preview-card { margin-top: 1.25rem; }

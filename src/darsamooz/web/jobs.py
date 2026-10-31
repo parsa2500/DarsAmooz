@@ -32,12 +32,17 @@ class Job:
     chapter: int
     count: int
     sample: bool
+    verify: bool = True
+    difficulty_mix: str | None = None
+    balance_answers: bool = True
+    export_profile: str | None = None
     status: JobStatus = JobStatus.queued
     logs: list[str] = field(default_factory=list)
     error: str | None = None
     prefix: str | None = None
     paths: dict[str, str] = field(default_factory=dict)
     question_count: int = 0
+    metrics: dict[str, Any] = field(default_factory=dict)
     started_at: str | None = None
     finished_at: str | None = None
     _cancel: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -54,12 +59,17 @@ class Job:
             "chapter": self.chapter,
             "count": self.count,
             "sample": self.sample,
+            "verify": self.verify,
+            "difficulty_mix": self.difficulty_mix,
+            "balance_answers": self.balance_answers,
+            "export_profile": self.export_profile,
             "status": self.status.value,
             "logs": list(self.logs),
             "error": self.error,
             "prefix": self.prefix,
             "paths": dict(self.paths),
             "question_count": self.question_count,
+            "metrics": dict(self.metrics),
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
@@ -83,7 +93,17 @@ class JobManager:
             return self._jobs.get(self._active_id)
         return None
 
-    def start(self, chapter: int, count: int, sample: bool) -> Job:
+    def start(
+        self,
+        chapter: int,
+        count: int,
+        sample: bool,
+        *,
+        verify: bool = True,
+        difficulty_mix: str | None = None,
+        balance_answers: bool = True,
+        export_profile: str | None = None,
+    ) -> Job:
         with self._lock:
             active = self.active()
             if active and active.status in (JobStatus.queued, JobStatus.running):
@@ -93,6 +113,10 @@ class JobManager:
                 chapter=chapter,
                 count=count,
                 sample=sample,
+                verify=verify,
+                difficulty_mix=difficulty_mix,
+                balance_answers=balance_answers,
+                export_profile=export_profile,
             )
             self._jobs[job.id] = job
             self._active_id = job.id
@@ -124,7 +148,6 @@ class JobManager:
 
     def _settings(self) -> Settings:
         settings = get_settings()
-        # Resolve data dirs against project root so generate works even if cwd drifts.
         for attr in ("data_dir", "textbooks_dir", "extracted_dir", "exports_dir", "manifests_dir"):
             p = getattr(settings, attr)
             if not Path(p).is_absolute():
@@ -150,9 +173,14 @@ class JobManager:
                     raise RuntimeError("حالت نمونه فقط برای فصل ۱ در دسترس است.")
                 job.log("بارگذاری سوالات نمونه (بدون LLM)…")
                 questions = load_sample_questions()[: job.count]
-                paths, run = persist_sample_run(
-                    questions, chapter=job.chapter, prefix=prefix, settings=settings
+                paths, run, questions = persist_sample_run(
+                    questions,
+                    chapter=job.chapter,
+                    prefix=prefix,
+                    settings=settings,
+                    balance_answers=job.balance_answers,
                 )
+                job.metrics = dict(run.metrics)
                 job.log(f"{len(questions)} سوال نمونه — run_id={run.run_id}")
             else:
                 if not settings.api_key:
@@ -162,14 +190,19 @@ class JobManager:
                     )
                 job.log(
                     f"تولید با {settings.provider_name} / {settings.model} — "
-                    f"فصل {job.chapter}، تعداد {job.count}…"
+                    f"فصل {job.chapter}، تعداد {job.count}، verify={job.verify}…"
                 )
                 if job._cancel.is_set():
                     job.status = JobStatus.cancelled
                     job.log("لغو شد.")
                     return
                 result = generate_from_chapter_with_run(
-                    job.chapter, count=job.count, settings=settings
+                    job.chapter,
+                    count=job.count,
+                    settings=settings,
+                    verify=job.verify,
+                    difficulty_mix=job.difficulty_mix,
+                    balance_answers=job.balance_answers,
                 )
                 if job._cancel.is_set():
                     job.status = JobStatus.cancelled
@@ -177,12 +210,28 @@ class JobManager:
                     return
                 questions = result.questions
                 paths = persist_generation(result, prefix=prefix, settings=settings)
+                job.metrics = dict(result.metrics)
                 m = result.metrics
                 job.log(
                     f"{len(questions)} سوال — run_id={result.run.run_id} "
                     f"rounds={m.get('rounds')} rejected={m.get('rejected')} "
-                    f"tokens={m.get('prompt_tokens')}+{m.get('completion_tokens')}"
+                    f"tokens={m.get('prompt_tokens')}+{m.get('completion_tokens')} "
+                    f"needs_review={m.get('needs_review')}"
                 )
+
+            if job.export_profile:
+                from darsamooz.profiles import export_with_profile
+
+                mapped = Path(settings.exports_dir) / f"{prefix}.{job.export_profile}.json"
+                export_with_profile(
+                    questions,
+                    mapped,
+                    profile_id=job.export_profile,
+                    settings=settings,
+                )
+                paths = dict(paths)
+                paths["profile"] = mapped
+                job.log(f"خروجی پروفایل {job.export_profile}: {mapped}")
 
             job.paths = {k: str(v) for k, v in paths.items()}
             job.question_count = len(questions)

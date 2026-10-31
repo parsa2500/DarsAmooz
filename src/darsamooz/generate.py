@@ -6,13 +6,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from darsamooz.balance import (
+    assign_target_difficulties,
+    balance_answer_positions,
+    difficulty_prompt_hint,
+    distribution_metrics,
+    parse_difficulty_mix,
+)
 from darsamooz.config import Settings, get_settings
 from darsamooz.ingest import PHYSICS10_CHAPTERS
 from darsamooz.llm import LLMProvider, get_provider
-from darsamooz.models import Question, Section
+from darsamooz.models import Difficulty, Question, Section
+from darsamooz.review import write_reviews_sidecar
 from darsamooz.runs import RunWriter
 from darsamooz.sections import load_sections
 from darsamooz.validate import validate_batch, validate_question_dict
+from darsamooz.verify import sections_to_text_map, verify_questions
 
 SYSTEM_PROMPT = """You write Iranian grade-10 physics MCQs (تست چهارگزینه‌ای) ONLY from the given unit text.
 Return ONLY JSON: {"questions":[{"stem":"...","options":["a","b","c","d"],"correct_index":0,"explanation":"...","difficulty":"easy|medium|hard","section":"...","source_refs":["verbatim quote from unit"]}]}
@@ -70,12 +79,16 @@ def _build_unit_prompt(
     chapter_title: str,
     section: Section,
     count: int,
+    *,
+    target_difficulty: Difficulty | None = None,
 ) -> str:
+    hint = difficulty_prompt_hint(target_difficulty)
     return (
         f"کتاب: فیزیک (۱) دهم ریاضی (۱۱۰۲۰۹)\n"
         f"فصل {chapter_num}: {chapter_title}\n"
         f"یونیت: {section.id} — {section.title}\n"
-        f"دقیقاً {count} تست بساز؛ فقط از متن یونیت.\n\n"
+        f"دقیقاً {count} تست بساز؛ فقط از متن یونیت.\n"
+        f"{hint}\n\n"
         f"--- یونیت ---\n{section.text}\n--- پایان ---\n"
     )
 
@@ -88,7 +101,6 @@ def plan_unit_schedule(sections: list[Section], count: int) -> list[tuple[Sectio
     schedule: list[tuple[Section, int]] = []
     remaining = count
     idx = 0
-    # Cap scheduled rounds: enough to cover count with slack for rejects
     max_slots = max(count * 2, len(usable) * 2)
     while remaining > 0 and len(schedule) < max_slots:
         sec = usable[idx % len(usable)]
@@ -106,14 +118,19 @@ def generate_from_chapter(
     provider: LLMProvider | None = None,
     settings: Settings | None = None,
     book_slug: str = "physics10-riazi-110209",
+    verify: bool = True,
+    difficulty_mix: str | dict | None = None,
+    balance_answers: bool = True,
 ) -> list[Question]:
-    """Back-compat wrapper: returns questions only."""
     return generate_from_chapter_with_run(
         chapter_num,
         count=count,
         provider=provider,
         settings=settings,
         book_slug=book_slug,
+        verify=verify,
+        difficulty_mix=difficulty_mix,
+        balance_answers=balance_answers,
     ).questions
 
 
@@ -124,6 +141,9 @@ def generate_from_chapter_with_run(
     provider: LLMProvider | None = None,
     settings: Settings | None = None,
     book_slug: str = "physics10-riazi-110209",
+    verify: bool = True,
+    difficulty_mix: str | dict | None = None,
+    balance_answers: bool = True,
 ) -> GenerationResult:
     settings = settings or get_settings()
     sections = load_sections(book_slug, chapter_num, settings)
@@ -132,10 +152,23 @@ def generate_from_chapter_with_run(
             f"No sections for chapter {chapter_num}. Run `darsamooz ingest` first."
         )
 
+    if isinstance(difficulty_mix, dict):
+        mix = {
+            (Difficulty(k) if not isinstance(k, Difficulty) else k): float(v)
+            for k, v in difficulty_mix.items()
+        }
+        total = sum(mix.values())
+        mix_norm = {k: v / total for k, v in mix.items()} if total else None
+    else:
+        mix_norm = parse_difficulty_mix(difficulty_mix)
+
     title = _chapter_title(chapter_num)
     schedule = plan_unit_schedule(sections, count)
     if not schedule:
         raise RuntimeError(f"Chapter {chapter_num} has no usable section text.")
+
+    targets = assign_target_difficulties(count, mix_norm)
+    target_iter = iter(targets)
 
     provider = provider or get_provider(settings)
     model_name: str | None = None
@@ -153,6 +186,11 @@ def generate_from_chapter_with_run(
             "provider": settings.provider_name,
             "model": model_name,
             "units_scheduled": len(schedule),
+            "verify": verify,
+            "difficulty_mix": (
+                {k.value: v for k, v in mix_norm.items()} if mix_norm else None
+            ),
+            "balance_answers": balance_answers,
         },
     )
 
@@ -167,8 +205,8 @@ def generate_from_chapter_with_run(
     completion_tokens = 0
     tokens_known = False
     early_stop = False
+    section_for_qid: dict[str, str] = {}
 
-    # Extra passes over schedule if rejects leave us short
     max_rounds = max(len(schedule) * 2, count * 2)
 
     for i in range(max_rounds):
@@ -178,7 +216,14 @@ def generate_from_chapter_with_run(
         batch = min(batch, count - len(questions))
         rounds += 1
         run.record_unit(sec.id, sec.title, len(sec.text))
-        user = _build_unit_prompt(chapter_num, title, sec, batch)
+        # Use next target difficulty for this batch (first slot)
+        target = next(target_iter, None) if batch else None
+        # If we already consumed targets for accepted qs, peek remaining plan
+        if target is None and mix_norm and len(questions) < len(targets):
+            target = targets[len(questions)]
+        user = _build_unit_prompt(
+            chapter_num, title, sec, batch, target_difficulty=target
+        )
         try:
             data = provider.complete_json(SYSTEM_PROMPT, user)
             usage = getattr(provider, "last_usage", None) or {}
@@ -221,6 +266,8 @@ def generate_from_chapter_with_run(
                 )
                 continue
             raw = {**raw, "section_id": sec.id, "section": raw.get("section") or sec.title}
+            if target is not None and not raw.get("difficulty"):
+                raw["difficulty"] = target.value
             stem = str(raw.get("stem") or raw.get("question") or "")
             if any(_stems_too_similar(stem, prev) for prev in accepted_stems):
                 rejected += 1
@@ -267,6 +314,7 @@ def generate_from_chapter_with_run(
                 continue
             questions.append(q)
             accepted_stems.append(q.stem)
+            section_for_qid[q.id] = sec.id
             accepted_this_round += 1
             run.append_item(
                 {
@@ -287,6 +335,33 @@ def generate_from_chapter_with_run(
         else:
             empty_streak = 0
 
+    questions = questions[:count]
+
+    if balance_answers and questions:
+        questions = balance_answer_positions(questions)
+
+    verify_metrics: dict[str, Any] = {"verify_enabled": False}
+    if verify and questions:
+        text_map = sections_to_text_map(sections)
+        questions, verify_metrics = verify_questions(
+            questions,
+            section_text_by_id=text_map,
+            provider=provider,
+            settings=settings,
+        )
+        for q in questions:
+            run.append_item(
+                {
+                    "status": "verified",
+                    "id": q.id,
+                    "review_status": q.review_status.value,
+                    "verifier_agrees": q.verifier_agrees,
+                    "verifier_answer_index": q.verifier_answer_index,
+                    "verifier_reason": (q.verifier_reason or "")[:200],
+                }
+            )
+
+    dist = distribution_metrics(questions)
     metrics: dict[str, Any] = {
         "rounds": rounds,
         "accepted": len(questions),
@@ -296,10 +371,17 @@ def generate_from_chapter_with_run(
         "prompt_tokens": prompt_tokens if tokens_known else None,
         "completion_tokens": completion_tokens if tokens_known else None,
         "units_touched": len({u["section_id"] for u in run.units_used}),
+        "balance_answers": balance_answers,
+        "difficulty_mix_target": (
+            {k.value: v for k, v in mix_norm.items()} if mix_norm else None
+        ),
+        **dist,
+        **verify_metrics,
     }
     if last_error:
         metrics["last_error"] = str(last_error)
     run.write_metrics(metrics)
+    write_reviews_sidecar(run.root, questions)
 
     if len(questions) < count:
         detail = f" last_error={last_error}" if last_error else ""
@@ -312,7 +394,7 @@ def generate_from_chapter_with_run(
         )
 
     return GenerationResult(
-        questions=questions[:count],
+        questions=questions,
         run=run,
         metrics=metrics,
     )
@@ -323,9 +405,15 @@ def persist_generation(
     *,
     prefix: str,
     settings: Settings | None = None,
+    approved_only: bool = False,
 ) -> dict[str, Path]:
     settings = settings or get_settings()
-    return result.run.finalize_exports(result.questions, prefix=prefix, settings=settings)
+    return result.run.finalize_exports(
+        result.questions,
+        prefix=prefix,
+        settings=settings,
+        approved_only=approved_only,
+    )
 
 
 def persist_sample_run(
@@ -334,29 +422,47 @@ def persist_sample_run(
     chapter: int,
     prefix: str,
     settings: Settings | None = None,
-) -> tuple[dict[str, Path], RunWriter]:
+    balance_answers: bool = True,
+) -> tuple[dict[str, Path], RunWriter, list[Question]]:
     settings = settings or get_settings()
+    qs = list(questions)
+    if balance_answers:
+        qs = balance_answer_positions(qs)
     run = RunWriter.create(
         chapter,
         settings=settings,
-        request={"count": len(questions), "sample": True, "provider": None, "model": None},
+        request={
+            "count": len(qs),
+            "sample": True,
+            "provider": None,
+            "model": None,
+            "verify": False,
+            "balance_answers": balance_answers,
+        },
     )
-    for q in questions:
-        run.append_item({"status": "accepted", "id": q.id, "sample": True, "stem": q.stem[:160]})
+    for q in qs:
+        run.append_item(
+            {"status": "accepted", "id": q.id, "sample": True, "stem": q.stem[:160]}
+        )
+    dist = distribution_metrics(qs)
     run.write_metrics(
         {
             "rounds": 0,
-            "accepted": len(questions),
+            "accepted": len(qs),
             "rejected": 0,
-            "requested": len(questions),
+            "requested": len(qs),
             "early_stop": False,
             "prompt_tokens": None,
             "completion_tokens": None,
             "sample": True,
+            "verify_enabled": False,
+            "balance_answers": balance_answers,
+            **dist,
         }
     )
-    paths = run.finalize_exports(questions, prefix=prefix, settings=settings)
-    return paths, run
+    write_reviews_sidecar(run.root, qs)
+    paths = run.finalize_exports(qs, prefix=prefix, settings=settings)
+    return paths, run, qs
 
 
 def load_sample_questions(path: Path | None = None) -> list[Question]:

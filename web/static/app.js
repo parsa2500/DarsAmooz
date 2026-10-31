@@ -1,222 +1,100 @@
 (() => {
-  "use strict";
+  const $ = (id) => document.getElementById(id);
 
-  const LETTERS = ["الف", "ب", "ج", "د"];
-  const DIFF_FA = { easy: "آسان", medium: "متوسط", hard: "سخت" };
-
-  const els = {
-    bookTitle: document.getElementById("bookTitle"),
-    providerLine: document.getElementById("providerLine"),
-    versionLine: document.getElementById("versionLine"),
-    form: document.getElementById("generateForm"),
-    chapter: document.getElementById("chapter"),
-    count: document.getElementById("count"),
-    sample: document.getElementById("sample"),
-    btnGenerate: document.getElementById("btnGenerate"),
-    btnCancel: document.getElementById("btnCancel"),
-    statusStrip: document.getElementById("statusStrip"),
-    statusText: document.getElementById("statusText"),
-    logBox: document.getElementById("logBox"),
-    previewEmpty: document.getElementById("previewEmpty"),
-    questionList: document.getElementById("questionList"),
-    pathsLine: document.getElementById("pathsLine"),
-    exportActions: document.getElementById("exportActions"),
-    btnCopyJson: document.getElementById("btnCopyJson"),
-    btnCopyDir: document.getElementById("btnCopyDir"),
-  };
+  const form = $("generate-form");
+  const chapterEl = $("chapter");
+  const countEl = $("count");
+  const sampleEl = $("sample");
+  const verifyEl = $("verify");
+  const balanceEl = $("balance");
+  const mixEl = $("difficulty-mix");
+  const profileEl = $("export-profile");
+  const btnStart = $("btn-start");
+  const btnCancel = $("btn-cancel");
+  const statusPanel = $("status-panel");
+  const statusLabel = $("status-label");
+  const statusDetail = $("status-detail");
+  const logEl = $("log");
+  const resultBox = $("result-box");
+  const resultSummary = $("result-summary");
+  const resultPaths = $("result-paths");
+  const keyHint = $("key-hint");
+  const previewList = $("preview-list");
+  const previewEmpty = $("preview-empty");
+  const btnReload = $("btn-reload-preview");
+  const btnExportApproved = $("btn-export-approved");
+  const approvedOnlyView = $("approved-only-view");
+  const reviewSummaryEl = $("review-summary");
 
   let pollTimer = null;
-  let lastPaths = null;
-  let exportsDir = "";
-
-  function qs() {
-    return new URLSearchParams(window.location.search);
-  }
-
-  function setStatus(state, text) {
-    els.statusStrip.dataset.state = state;
-    els.statusText.textContent = text;
-  }
-
-  function setBusy(busy) {
-    els.btnGenerate.disabled = busy;
-    els.btnCancel.disabled = !busy;
-    els.chapter.disabled = busy;
-    els.count.disabled = busy;
-    els.sample.disabled = busy;
-  }
-
-  function showLog(lines) {
-    if (!lines || !lines.length) {
-      els.logBox.hidden = true;
-      els.logBox.textContent = "";
-      return;
-    }
-    els.logBox.hidden = false;
-    els.logBox.textContent = lines.join("\n");
-    els.logBox.scrollTop = els.logBox.scrollHeight;
-  }
-
-  function formatDetail(detail) {
-    if (detail == null) return null;
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail)) {
-      return detail
-        .map((d) => (typeof d === "string" ? d : d.msg || JSON.stringify(d)))
-        .filter(Boolean)
-        .join("؛ ");
-    }
-    if (typeof detail === "object" && detail.msg) return detail.msg;
-    try {
-      return JSON.stringify(detail);
-    } catch {
-      return String(detail);
-    }
-  }
+  let currentJobId = null;
+  let currentPrefix = null;
+  const letters = ["الف", "ب", "ج", "د"];
+  const statusFa = {
+    pending: "در انتظار",
+    approved: "تأیید",
+    rejected: "رد",
+    needs_review: "نیاز به بازبینی",
+  };
 
   async function api(path, options) {
-    let res;
-    try {
-      res = await fetch(path, {
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
-        ...options,
-      });
-    } catch {
-      throw new Error(
-        "ارتباط با سرور قطع است. لانچر را دوباره اجرا کنید (scripts\\launch.bat)."
-      );
-    }
-    let data = null;
-    try {
-      data = await res.json();
-    } catch {
-      data = null;
-    }
+    const res = await fetch(path, {
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      ...options,
+    });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const detail = data && (data.detail || data.error);
-      const msg = formatDetail(detail) || res.statusText;
-      throw new Error(msg || "خطای ناشناخته");
+      const detail = data.detail || res.statusText || "خطا";
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
     }
     return data;
   }
 
-  async function loadMeta() {
-    const meta = await api("/api/meta");
-    els.bookTitle.textContent = meta.book_title;
-    exportsDir = meta.exports_dir || "";
-    const keyNote = meta.has_api_key
-      ? `کلید API آماده`
-      : `کلید API نیست — از حالت نمونه استفاده کنید`;
-    const modelBit = meta.model ? ` · ${meta.model}` : "";
-    els.providerLine.textContent = `${meta.provider}${modelBit} · ${keyNote}`;
-    els.versionLine.textContent = `نسخه ${meta.version}`;
-
-    els.chapter.replaceChildren();
-    for (const ch of meta.chapters) {
-      const opt = document.createElement("option");
-      opt.value = String(ch.number);
-      opt.textContent = `فصل ${ch.number} — ${ch.title}`;
-      els.chapter.appendChild(opt);
-    }
-
-    const params = qs();
-    if (params.has("chapter")) els.chapter.value = params.get("chapter");
-    if (params.has("count")) els.count.value = params.get("count");
-    if (params.get("sample") === "1" || params.get("sample") === "true") {
-      els.sample.checked = true;
-    }
+  function setStatus(kind, label, detail) {
+    statusPanel.className = `status ${kind}`;
+    statusLabel.textContent = label;
+    statusDetail.textContent = detail || "";
   }
 
-  function renderQuestions(payload) {
-    const questions = payload.questions || [];
-    lastPaths = payload.paths || null;
+  function renderLog(logs) {
+    logEl.textContent = (logs || []).join("\n");
+    logEl.scrollTop = logEl.scrollHeight;
+  }
 
-    if (!questions.length) {
-      els.previewEmpty.hidden = false;
-      els.questionList.hidden = true;
-      els.pathsLine.hidden = true;
-      els.exportActions.hidden = true;
+  function renderResult(job) {
+    if (!job || job.status !== "succeeded") {
+      resultBox.classList.add("hidden");
       return;
     }
-
-    els.previewEmpty.hidden = true;
-    els.questionList.hidden = false;
-    els.exportActions.hidden = false;
-    els.questionList.replaceChildren();
-
-    if (lastPaths) {
-      els.pathsLine.hidden = false;
-      els.pathsLine.textContent = [
-        lastPaths.json && `JSON: ${lastPaths.json}`,
-        lastPaths.csv && `CSV: ${lastPaths.csv}`,
-        lastPaths.md && `MD: ${lastPaths.md}`,
-      ]
-        .filter(Boolean)
-        .join("  |  ");
-    }
-
-    for (const q of questions) {
+    resultBox.classList.remove("hidden");
+    resultSummary.textContent = `${job.question_count} سؤال آماده شد.`;
+    resultPaths.innerHTML = "";
+    Object.entries(job.paths || {}).forEach(([k, v]) => {
       const li = document.createElement("li");
-      const diff = DIFF_FA[q.difficulty] || q.difficulty || "";
-      const meta = document.createElement("div");
-      meta.className = "q-meta";
-      meta.innerHTML = `<span class="q-num"></span>`;
-      if (diff) {
-        const b = document.createElement("span");
-        b.className = "badge";
-        b.textContent = diff;
-        meta.appendChild(b);
-      }
-      if (q.is_sample) {
-        const b = document.createElement("span");
-        b.className = "badge badge-sample";
-        b.textContent = "نمونه";
-        meta.appendChild(b);
-      }
-      if (q.id) {
-        const b = document.createElement("span");
-        b.className = "badge";
-        b.textContent = q.id;
-        meta.appendChild(b);
-      }
-
-      const stem = document.createElement("p");
-      stem.className = "q-stem";
-      stem.textContent = q.stem;
-
-      const opts = document.createElement("ul");
-      opts.className = "options";
-      (q.options || []).forEach((text, i) => {
-        const o = document.createElement("li");
-        if (i === q.correct_index) o.classList.add("is-correct");
-        o.innerHTML = `<span class="opt-letter">${LETTERS[i] || i + 1}</span>`;
-        const span = document.createElement("span");
-        span.textContent = text;
-        o.appendChild(span);
-        opts.appendChild(o);
-      });
-
-      const details = document.createElement("details");
-      details.className = "answer-details";
-      const summary = document.createElement("summary");
-      summary.textContent = `پاسخ و توضیح (${LETTERS[q.correct_index] || "?"})`;
-      const expl = document.createElement("p");
-      expl.className = "explanation";
-      expl.textContent = q.explanation || "";
-      details.appendChild(summary);
-      details.appendChild(expl);
-
-      li.appendChild(meta);
-      li.appendChild(stem);
-      li.appendChild(opts);
-      li.appendChild(details);
-      els.questionList.appendChild(li);
+      li.innerHTML = `<strong>${k}</strong>: <code>${v}</code>`;
+      resultPaths.appendChild(li);
+    });
+    if (job.metrics) {
+      const m = job.metrics;
+      const extra = document.createElement("li");
+      extra.textContent =
+        `پاسخ‌ها: ${JSON.stringify(m.answer_positions || {})} · ` +
+        `سختی: ${JSON.stringify(m.difficulties || {})} · ` +
+        `نیازبازبینی: ${m.needs_review ?? 0}`;
+      resultPaths.appendChild(extra);
     }
   }
 
-  async function loadExport(prefix) {
-    const data = await api(`/api/exports/${encodeURIComponent(prefix)}`);
-    renderQuestions(data);
+  function setBusy(busy) {
+    btnStart.disabled = busy;
+    btnCancel.disabled = !busy;
+    chapterEl.disabled = busy;
+    countEl.disabled = busy;
+    sampleEl.disabled = busy;
+    verifyEl.disabled = busy;
+    balanceEl.disabled = busy;
+    mixEl.disabled = busy;
+    profileEl.disabled = busy;
   }
 
   function stopPoll() {
@@ -226,100 +104,275 @@
     }
   }
 
-  async function onJobUpdate(job) {
-    showLog(job.logs);
-    const map = {
-      queued: "در صف…",
-      running: "در حال تولید…",
-      succeeded: "تولید کامل شد",
-      failed: job.error || "خطا در تولید",
-      cancelled: "لغو شد",
-    };
-    setStatus(job.status, map[job.status] || job.status);
-
-    if (job.status === "succeeded" && job.prefix) {
+  async function refreshJob(jobId) {
+    const job = await api(`/api/jobs/${jobId}`);
+    renderLog(job.logs);
+    if (job.status === "queued" || job.status === "running") {
+      setBusy(true);
+      setStatus("running", "در حال تولید…", `فصل ${job.chapter} · ${job.count} سؤال`);
+    } else if (job.status === "succeeded") {
       setBusy(false);
       stopPoll();
-      try {
-        await loadExport(job.prefix);
-      } catch (err) {
-        setStatus("failed", err.message);
+      setStatus("ok", "تمام شد", `${job.question_count} سؤال`);
+      renderResult(job);
+      if (job.prefix) {
+        currentPrefix = job.prefix;
+        btnReload.disabled = false;
+        btnExportApproved.disabled = false;
+        await loadPreview(job.prefix);
       }
-    } else if (job.status === "failed" || job.status === "cancelled") {
+    } else if (job.status === "failed") {
       setBusy(false);
       stopPoll();
+      setStatus("err", "خطا", job.error || "نامشخص");
+      renderResult(null);
+    } else if (job.status === "cancelled") {
+      setBusy(false);
+      stopPoll();
+      setStatus("idle", "لغو شد", "");
+      renderResult(null);
     }
+    return job;
   }
 
   function startPoll(jobId) {
     stopPoll();
-    pollTimer = setInterval(async () => {
-      try {
-        const job = await api(`/api/jobs/${jobId}`);
-        await onJobUpdate(job);
-      } catch (err) {
+    currentJobId = jobId;
+    pollTimer = setInterval(() => {
+      refreshJob(jobId).catch((err) => {
+        setStatus("err", "خطای وضعیت", err.message);
         stopPoll();
         setBusy(false);
-        setStatus("failed", err.message);
-      }
+      });
     }, 900);
   }
 
-  els.form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const body = {
-      chapter: Number(els.chapter.value),
-      count: Number(els.count.value),
-      sample: els.sample.checked,
-    };
-    setBusy(true);
-    setStatus("running", "شروع جاب…");
-    showLog([]);
-    try {
-      const job = await api("/api/generate", {
-        method: "POST",
-        body: JSON.stringify(body),
+  async function loadPreview(prefix) {
+    currentPrefix = prefix;
+    const approvedOnly = approvedOnlyView.checked;
+    const data = await api(
+      `/api/exports/${encodeURIComponent(prefix)}?approved_only=${approvedOnly ? "true" : "false"}`
+    );
+    previewEmpty.classList.add("hidden");
+    previewList.innerHTML = "";
+    const rs = data.review_summary || {};
+    reviewSummaryEl.textContent =
+      `بازبینی — در انتظار: ${rs.pending || 0} · تأیید: ${rs.approved || 0} · ` +
+      `رد: ${rs.rejected || 0} · نیازبازبینی: ${rs.needs_review || 0}`;
+
+    (data.questions || []).forEach((q, i) => {
+      const article = document.createElement("article");
+      article.className = "q";
+      const opts = (q.options || [])
+        .map((o, j) => {
+          const mark = j === q.correct_index ? " ✓" : "";
+          return `<li class="${j === q.correct_index ? "correct" : ""}">${letters[j]}) ${escapeHtml(o)}${mark}</li>`;
+        })
+        .join("");
+      const rev = q.review_status || "pending";
+      const verifyNote = (q.review_status === "needs_review" || q.verifier_agrees === false)
+        ? `<p class="verify warn"><strong>نیاز به بازبینی:</strong> مدل تأییدکننده «${letters[q.verifier_answer_index] || "?"}» گفت. ${escapeHtml(q.verifier_reason || "")}</p>`
+        : "";
+      article.innerHTML = `
+        <header>
+          <span class="q-num">${i + 1}</span>
+          <span class="pill">${escapeHtml(q.difficulty || "")}</span>
+          <span class="pill status-${rev}">${statusFa[rev] || rev}</span>
+          <span class="muted q-id">${escapeHtml(q.id || "")}</span>
+        </header>
+        <p class="stem">${escapeHtml(q.stem)}</p>
+        <ul class="opts">${opts}</ul>
+        <p class="expl"><strong>توضیح:</strong> ${escapeHtml(q.explanation || "")}</p>
+        ${verifyNote}
+        <details>
+          <summary>نقل‌قول کتاب</summary>
+          <blockquote>${escapeHtml((q.source_refs || []).join(" / ") || "—")}</blockquote>
+        </details>
+        <div class="q-actions">
+          <button type="button" class="btn tiny ok" data-act="approve">تأیید</button>
+          <button type="button" class="btn tiny danger" data-act="reject">رد</button>
+          <button type="button" class="btn tiny" data-act="edit">ویرایش</button>
+        </div>
+        <div class="edit-panel hidden">
+          <label>صورت سؤال<textarea class="edit-stem">${escapeHtml(q.stem)}</textarea></label>
+          <label>گزینه الف<input class="edit-opt" data-i="0" value="${escapeAttr(q.options[0] || "")}" /></label>
+          <label>گزینه ب<input class="edit-opt" data-i="1" value="${escapeAttr(q.options[1] || "")}" /></label>
+          <label>گزینه ج<input class="edit-opt" data-i="2" value="${escapeAttr(q.options[2] || "")}" /></label>
+          <label>گزینه د<input class="edit-opt" data-i="3" value="${escapeAttr(q.options[3] || "")}" /></label>
+          <label>گزینه درست
+            <select class="edit-correct">
+              ${letters.map((l, j) => `<option value="${j}" ${j === q.correct_index ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+          </label>
+          <label>توضیح<textarea class="edit-expl">${escapeHtml(q.explanation || "")}</textarea></label>
+          <label>سختی
+            <select class="edit-diff">
+              ${["easy", "medium", "hard"].map((d) => `<option value="${d}" ${d === q.difficulty ? "selected" : ""}>${d}</option>`).join("")}
+            </select>
+          </label>
+          <button type="button" class="btn primary tiny" data-act="save">ذخیره ویرایش</button>
+        </div>
+      `;
+      article.querySelectorAll("[data-act]").forEach((btn) => {
+        btn.addEventListener("click", () => onQuestionAction(prefix, q.id, btn.dataset.act, article));
       });
-      await onJobUpdate(job);
-      if (job.status === "queued" || job.status === "running") {
-        startPoll(job.id);
-      } else {
-        setBusy(false);
+      previewList.appendChild(article);
+    });
+  }
+
+  async function onQuestionAction(prefix, qid, act, article) {
+    try {
+      if (act === "approve" || act === "reject") {
+        await api(`/api/exports/${encodeURIComponent(prefix)}/questions/${encodeURIComponent(qid)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ review_status: act === "approve" ? "approved" : "rejected" }),
+        });
+        await loadPreview(prefix);
+      } else if (act === "edit") {
+        article.querySelector(".edit-panel").classList.toggle("hidden");
+      } else if (act === "save") {
+        const panel = article.querySelector(".edit-panel");
+        const options = [...panel.querySelectorAll(".edit-opt")]
+          .sort((a, b) => Number(a.dataset.i) - Number(b.dataset.i))
+          .map((el) => el.value);
+        await api(`/api/exports/${encodeURIComponent(prefix)}/questions/${encodeURIComponent(qid)}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            stem: panel.querySelector(".edit-stem").value,
+            options,
+            correct_index: Number(panel.querySelector(".edit-correct").value),
+            explanation: panel.querySelector(".edit-expl").value,
+            difficulty: panel.querySelector(".edit-diff").value,
+          }),
+        });
+        await loadPreview(prefix);
       }
     } catch (err) {
-      setBusy(false);
-      setStatus("failed", err.message);
-    }
-  });
-
-  els.btnCancel.addEventListener("click", async () => {
-    try {
-      const res = await api("/api/cancel", { method: "POST", body: "{}" });
-      if (res.job) await onJobUpdate(res.job);
-      else setStatus("cancelled", "لغو شد");
-    } catch (err) {
-      setStatus("failed", err.message);
-    }
-  });
-
-  async function copyText(text) {
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setStatus(els.statusStrip.dataset.state || "idle", "کپی شد");
-    } catch {
-      setStatus("failed", "کپی در کلیپ‌بورد ممکن نشد");
+      alert(err.message);
     }
   }
 
-  els.btnCopyJson.addEventListener("click", () => {
-    copyText(lastPaths && lastPaths.json);
-  });
-  els.btnCopyDir.addEventListener("click", () => {
-    copyText(exportsDir);
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/'/g, "&#39;");
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    resultBox.classList.add("hidden");
+    try {
+      setBusy(true);
+      setStatus("running", "شروع…", "");
+      renderLog([]);
+      const body = {
+        chapter: Number(chapterEl.value),
+        count: Number(countEl.value),
+        sample: sampleEl.checked,
+        verify: verifyEl.checked,
+        balance_answers: balanceEl.checked,
+        difficulty_mix: mixEl.value.trim() || null,
+        export_profile: profileEl.value || null,
+      };
+      const job = await api("/api/generate", { method: "POST", body: JSON.stringify(body) });
+      currentJobId = job.id;
+      renderLog(job.logs);
+      startPoll(job.id);
+      await refreshJob(job.id);
+    } catch (err) {
+      setBusy(false);
+      setStatus("err", "شروع نشد", err.message);
+    }
   });
 
-  loadMeta().catch((err) => {
-    setStatus("failed", err.message || "بارگذاری متا ناموفق بود");
+  btnCancel.addEventListener("click", async () => {
+    try {
+      await api("/api/cancel", { method: "POST", body: "{}" });
+      if (currentJobId) await refreshJob(currentJobId);
+    } catch (err) {
+      setStatus("err", "لغو ناموفق", err.message);
+    }
   });
+
+  btnReload.addEventListener("click", () => {
+    if (currentPrefix) loadPreview(currentPrefix).catch((e) => alert(e.message));
+  });
+  approvedOnlyView.addEventListener("change", () => {
+    if (currentPrefix) loadPreview(currentPrefix).catch((e) => alert(e.message));
+  });
+  btnExportApproved.addEventListener("click", async () => {
+    if (!currentPrefix) return;
+    try {
+      const data = await api(`/api/exports/${encodeURIComponent(currentPrefix)}/export-approved`, {
+        method: "POST",
+        body: "{}",
+      });
+      alert(`خروجی تأییدشده‌ها: ${data.count} سؤال\n${JSON.stringify(data.paths, null, 2)}`);
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+
+  async function boot() {
+    try {
+      const meta = await api("/api/meta");
+      $("book-title").textContent = meta.book_title;
+      $("version-badge").textContent = `v${meta.version}`;
+      const modelBit = meta.model ? ` · ${meta.model}` : "";
+      $("provider-badge").textContent = `${meta.provider}${modelBit}`;
+      chapterEl.innerHTML = "";
+      (meta.chapters || []).forEach((c) => {
+        const opt = document.createElement("option");
+        opt.value = c.number;
+        opt.textContent = `${c.number}. ${c.title}`;
+        chapterEl.appendChild(opt);
+      });
+      profileEl.innerHTML = `<option value="">— بدون خروجی پروفایلی —</option>`;
+      (meta.export_profiles || []).forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = `${p.id} — ${p.name || p.label || ""}`;
+        profileEl.appendChild(opt);
+      });
+      if (meta.has_api_key) {
+        keyHint.textContent = "کلید API پیدا شد؛ می‌توانید تولید واقعی بزنید.";
+        keyHint.className = "hint ok";
+      } else {
+        keyHint.textContent =
+          "کلید API نیست — فقط حالت نمونه کار می‌کند. کلید را در .env بگذارید.";
+        keyHint.className = "hint warn";
+        sampleEl.checked = true;
+      }
+      verifyEl.checked = meta.verify_default !== false;
+
+      const active = await api("/api/jobs/active");
+      if (active.job && (active.job.status === "running" || active.job.status === "queued")) {
+        currentJobId = active.job.id;
+        setBusy(true);
+        renderLog(active.job.logs);
+        startPoll(active.job.id);
+      } else if (active.job && active.job.status === "succeeded") {
+        renderLog(active.job.logs);
+        setStatus("ok", "آخرین اجرا موفق", "");
+        renderResult(active.job);
+        if (active.job.prefix) {
+          currentPrefix = active.job.prefix;
+          btnReload.disabled = false;
+          btnExportApproved.disabled = false;
+          await loadPreview(active.job.prefix);
+        }
+      } else {
+        setStatus("idle", "آماده", "فصل و تعداد را انتخاب کنید.");
+      }
+    } catch (err) {
+      setStatus("err", "بارگذاری نشد", err.message);
+    }
+  }
+
+  boot();
 })();

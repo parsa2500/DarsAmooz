@@ -3,87 +3,105 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>درس‌آموز</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <title>درس‌آموز — تولید تست</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <!--
-    THESIS: Operator desk for grounded MCQ generation — worksheet geometry, not a marketing hero.
-    OWN-WORLD: Cool slate paper, deep lab-teal ink, Vazirmatn, ruled-panel rhythm.
-    STORY: Pick chapter and count, run generate, read items and export paths in place.
-    FIRST VIEWPORT: Brand mark + book title, generate form, status strip; preview below.
-    FORM: Exam-desk Operate surface (seed: plan-local-web).
-    FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
-  -->
-  <div class="page">
-    <header class="masthead">
-      <div class="brand-block">
-        <p class="brand">درس‌آموز</p>
-        <p class="brand-en" lang="en">DarsAmooz</p>
+  <div class="wrap">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">DarsAmooz</p>
+        <h1>تولید تست از کتاب درسی</h1>
+        <p class="sub" id="book-title">…</p>
       </div>
-      <div class="masthead-meta">
-        <p id="bookTitle" class="book-title">…</p>
-        <p id="providerLine" class="provider-line"></p>
+      <div class="badge-stack">
+        <span class="badge" id="provider-badge">—</span>
+        <span class="badge muted" id="version-badge">v?</span>
       </div>
     </header>
 
-    <main class="workspace">
-      <section class="panel generate-panel" aria-labelledby="genHeading">
-        <h1 id="genHeading">تولید تست</h1>
-        <p class="lede">از متن فصل کتاب، تست چهارگزینه‌ای بسازید و خروجی را همین‌جا ببینید.</p>
-
-        <form id="generateForm" class="gen-form">
-          <div class="field">
-            <label for="chapter">فصل</label>
+    <main class="grid">
+      <section class="card">
+        <h2>تنظیمات تولید</h2>
+        <form id="generate-form">
+          <label>
+            فصل
             <select id="chapter" name="chapter" required></select>
-          </div>
-          <div class="field">
-            <label for="count">تعداد سؤال</label>
+          </label>
+          <label>
+            تعداد سؤال
             <input id="count" name="count" type="number" min="1" max="100" value="10" required />
-          </div>
-          <div class="field field-toggle">
-            <label class="toggle">
-              <input id="sample" name="sample" type="checkbox" />
-              <span class="toggle-ui" aria-hidden="true"></span>
-              <span class="toggle-label">حالت نمونه <span class="hint">(بدون API، فقط فصل ۱)</span></span>
-            </label>
-          </div>
+          </label>
+          <label class="check">
+            <input id="sample" name="sample" type="checkbox" />
+            حالت نمونه (بدون LLM — فقط فصل ۱)
+          </label>
+          <label class="check">
+            <input id="verify" name="verify" type="checkbox" checked />
+            تأیید جواب با مدل دوم (پیش‌فرض روشن)
+          </label>
+          <label class="check">
+            <input id="balance" name="balance" type="checkbox" checked />
+            پخش یکنواخت گزینه‌ی درست (الف–د)
+          </label>
+          <label>
+            ترکیب سختی (مثلاً easy=30,medium=50,hard=20)
+            <input id="difficulty-mix" name="difficulty_mix" type="text" placeholder="خالی = آزاد" />
+          </label>
+          <label>
+            پروفایل خروجی مشتری
+            <select id="export-profile" name="export_profile">
+              <option value="">— بدون خروجی پروفایلی —</option>
+            </select>
+          </label>
+          <p class="hint" id="key-hint"></p>
           <div class="actions">
-            <button type="submit" id="btnGenerate" class="btn btn-primary">شروع تولید</button>
-            <button type="button" id="btnCancel" class="btn btn-ghost" disabled>لغو</button>
+            <button type="submit" class="btn primary" id="btn-start">شروع تولید</button>
+            <button type="button" class="btn danger" id="btn-cancel" disabled>توقف</button>
           </div>
         </form>
-
-        <div id="statusStrip" class="status-strip" data-state="idle" role="status" aria-live="polite">
-          <span id="statusDot" class="status-dot" aria-hidden="true"></span>
-          <span id="statusText">آمادهٔ تولید</span>
-        </div>
-        <pre id="logBox" class="log-box" hidden></pre>
       </section>
 
-      <section class="panel preview-panel" aria-labelledby="previewHeading">
-        <div class="preview-head">
-          <h2 id="previewHeading">پیش‌نمایش سوالات</h2>
-          <div id="exportActions" class="export-actions" hidden>
-            <button type="button" id="btnCopyJson" class="btn btn-small">کپی مسیر JSON</button>
-            <button type="button" id="btnCopyDir" class="btn btn-small">کپی پوشه خروجی</button>
-          </div>
+      <section class="card">
+        <h2>وضعیت</h2>
+        <div id="status-panel" class="status idle">
+          <p id="status-label">آماده</p>
+          <p id="status-detail" class="muted"></p>
         </div>
-        <p id="previewEmpty" class="empty">هنوز خروجی‌ای نیست. بعد از تولید، سوالات اینجا نمایش داده می‌شوند.</p>
-        <p id="pathsLine" class="paths-line" hidden></p>
-        <ol id="questionList" class="question-list" hidden></ol>
+        <div class="log-box">
+          <h3>لاگ</h3>
+          <pre id="log" aria-live="polite"></pre>
+        </div>
+        <div id="result-box" class="result hidden">
+          <h3>خروجی</h3>
+          <p id="result-summary"></p>
+          <ul id="result-paths"></ul>
+          <p class="hint">فایل‌ها در پوشهٔ data\exports ذخیره می‌شوند.</p>
+        </div>
       </section>
     </main>
 
-    <footer class="foot">
-      <span id="versionLine"></span>
-      <span class="foot-sep" aria-hidden="true">·</span>
-      <span>فقط روی همین رایانه — بدون سامانه آزمون</span>
+    <section class="card preview-card">
+      <div class="preview-head">
+        <h2>بازبینی سؤالات</h2>
+        <div class="preview-actions">
+          <label class="check compact">
+            <input id="approved-only-view" type="checkbox" />
+            فقط تأییدشده‌ها
+          </label>
+          <button type="button" class="btn" id="btn-export-approved" disabled>خروجی تأییدشده‌ها</button>
+          <button type="button" class="btn" id="btn-reload-preview" disabled>بارگذاری مجدد</button>
+        </div>
+      </div>
+      <p id="review-summary" class="muted"></p>
+      <div id="preview-empty" class="muted">بعد از تولید موفق، سؤالات اینجا برای تأیید/رد/ویرایش ظاهر می‌شوند.</div>
+      <div id="preview-list"></div>
+    </section>
+
+    <footer>
+      <p>بدون جایگزین بی‌صدا · خروجی فقط از متن کتاب · کلید API در <code>.env</code></p>
     </footer>
   </div>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
