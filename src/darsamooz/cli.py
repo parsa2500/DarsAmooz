@@ -7,7 +7,12 @@ import click
 
 from darsamooz import __version__
 from darsamooz.config import get_settings
-from darsamooz.export import export_csv, export_json
+from darsamooz.export import (
+    export_csv,
+    export_json,
+    export_markdown,
+    load_questions_from_json,
+)
 from darsamooz.generate import generate_from_chapter, load_sample_questions
 from darsamooz.ingest import PHYSICS10_CHAPTERS, ingest_pdf
 
@@ -89,10 +94,34 @@ def generate_cmd(chapter: int, count: int, out_prefix: str | None, sample: bool)
     prefix = out_prefix or f"phys10-ch{chapter}"
     json_path = settings.exports_dir / f"{prefix}.json"
     csv_path = settings.exports_dir / f"{prefix}.csv"
+    md_path = settings.exports_dir / f"{prefix}.md"
     export_json(questions, json_path)
     export_csv(questions, csv_path)
+    export_markdown(questions, md_path)
     click.echo(f"JSON: {json_path}")
     click.echo(f"CSV:  {csv_path}")
+    click.echo(f"MD:   {md_path}")
+
+
+@main.command("to-md")
+@click.argument("json_path", type=click.Path(path_type=Path, exists=True))
+@click.option(
+    "--out",
+    "out_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output .md path (default: same stem as JSON)",
+)
+@click.option("--title", default=None, help="Optional Markdown H1 title override")
+def to_md_cmd(json_path: Path, out_path: Path | None, title: str | None) -> None:
+    """Convert an existing questions JSON export to RTL Persian Markdown."""
+    try:
+        questions = load_questions_from_json(json_path)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    dest = out_path or json_path.with_suffix(".md")
+    export_markdown(questions, dest, title=title)
+    click.echo(f"MD: {dest} ({len(questions)} questions)")
 
 
 if __name__ == "__main__":

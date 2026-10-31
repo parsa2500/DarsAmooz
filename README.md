@@ -41,9 +41,12 @@ darsamooz generate --chapter 1 --count 20
 
 # بدون کلید API — خروجی نمونهٔ دستی فصل ۱:
 darsamooz generate --chapter 1 --sample
+
+# تبدیل JSON موجود به Markdown خوانا (راست‌چین):
+darsamooz to-md samples/physics10_ch1_gemini.json --out samples/physics10_ch1_gemini.md
 ```
 
-خروجی‌ها در `data/exports/` ذخیره می‌شوند.
+خروجی‌های هر `generate` در `data/exports/` به صورت JSON و CSV و Markdown (`.md`) ذخیره می‌شوند.
 
 ### نکته حقوقی
 PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و برنامه‌ریزی آموزشی است و **داخل ریپو commit نمی‌شود**. فقط اسکریپت دانلود و manifest نگه داشته می‌شود.
@@ -57,7 +60,12 @@ PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و ب
 2. **Chunk** — paragraph-aware chunks for LLM context  
 3. **Generate** — Gemini / OpenRouter / OpenAI-compatible API; questions are grounded in extracted chapter PDF text  
 4. **Validate** — exactly 4 options, one correct index, explanation, chapter, difficulty  
-5. **Export** — JSON + CSV (UTF-8 BOM for Excel)
+5. **Export** — JSON + CSV (UTF-8 BOM for Excel) + RTL Persian Markdown (`.md`, answers in `<details>`)
+
+Convert an existing JSON export:
+```bash
+darsamooz to-md path/to/questions.json --out path/to/questions.md
+```
 
 ### Config
 See `.env.example`. Select provider with `LLM_PROVIDER=gemini` | `openrouter` | `openai`.
@@ -79,7 +87,7 @@ There is **no silent model or syllabus fallback**. If the configured provider/mo
 
 ### Sample output
 - `samples/physics10_ch1_sample.json` — **5 hand-written SAMPLE** questions (no API key: `darsamooz generate --chapter 1 --sample`).
-- `samples/physics10_ch1_gemini.json` / `.csv` — **20 Gemini-generated** chapter-1 questions grounded in book text.
+- `samples/physics10_ch1_gemini.json` / `.csv` / `.md` — **20 Gemini-generated** chapter-1 questions grounded in book text (Markdown is RTL-friendly for reading on GitHub).
 - `samples/physics10_ch1_openrouter.json` / `.csv` — **5 OpenRouter** chapter-1 questions (`OPENROUTER_MODEL`, free `:free` pool).
 
 ### Tests
