@@ -188,8 +188,10 @@ class JobManager:
                         f"کلید API برای LLM_PROVIDER={settings.provider_name} تنظیم نشده. "
                         "در .env کلید را بگذارید یا حالت نمونه را روشن کنید."
                     )
+                fb = settings.fallback_provider_name
+                fb_bit = f"، fallback={fb}" if fb else ""
                 job.log(
-                    f"تولید با {settings.provider_name} / {settings.model} — "
+                    f"تولید با {settings.provider_name} / {settings.model}{fb_bit} — "
                     f"فصل {job.chapter}، تعداد {job.count}، verify={job.verify}…"
                 )
                 if job._cancel.is_set():
@@ -216,8 +218,17 @@ class JobManager:
                     f"{len(questions)} سوال — run_id={result.run.run_id} "
                     f"rounds={m.get('rounds')} rejected={m.get('rejected')} "
                     f"tokens={m.get('prompt_tokens')}+{m.get('completion_tokens')} "
-                    f"needs_review={m.get('needs_review')}"
+                    f"needs_review={m.get('needs_review')} "
+                    f"fallback={m.get('fallback_count', 0)} "
+                    f"by_provider={m.get('calls_by_provider')}"
                 )
+                if m.get("fallback_count"):
+                    reasons = m.get("fallback_reasons") or []
+                    job.log(
+                        f"هشدار fallback: {m.get('fallback_count')} فراخوانی از "
+                        f"{m.get('primary_provider')} به {m.get('fallback_provider')} — "
+                        f"{reasons[:3]}"
+                    )
 
             if job.export_profile:
                 from darsamooz.profiles import export_with_profile

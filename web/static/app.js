@@ -77,11 +77,29 @@
     if (job.metrics) {
       const m = job.metrics;
       const extra = document.createElement("li");
-      extra.textContent =
+      let line =
         `پاسخ‌ها: ${JSON.stringify(m.answer_positions || {})} · ` +
         `سختی: ${JSON.stringify(m.difficulties || {})} · ` +
         `نیازبازبینی: ${m.needs_review ?? 0}`;
+      if (m.calls_by_provider) {
+        line += ` · provider: ${JSON.stringify(m.calls_by_provider)}`;
+      }
+      if (m.fallback_count) {
+        line += ` · fallback: ${m.fallback_count}`;
+        if (m.fallback_provider) line += `→${m.fallback_provider}`;
+      }
+      extra.textContent = line;
       resultPaths.appendChild(extra);
+      if (m.fallback_count) {
+        const warn = document.createElement("li");
+        warn.style.color = "#b45309";
+        warn.textContent =
+          `هشدار: ${m.fallback_count} فراخوانی با fallback` +
+          (m.fallback_reasons && m.fallback_reasons.length
+            ? ` — ${m.fallback_reasons[0]}`
+            : "");
+        resultPaths.appendChild(warn);
+      }
     }
   }
 
@@ -324,7 +342,8 @@
       $("book-title").textContent = meta.book_title;
       $("version-badge").textContent = `v${meta.version}`;
       const modelBit = meta.model ? ` · ${meta.model}` : "";
-      $("provider-badge").textContent = `${meta.provider}${modelBit}`;
+      const fbBit = meta.fallback_provider ? ` → fallback:${meta.fallback_provider}` : "";
+    $("provider-badge").textContent = `${meta.provider}${modelBit}${fbBit}`;
       chapterEl.innerHTML = "";
       (meta.chapters || []).forEach((c) => {
         const opt = document.createElement("option");

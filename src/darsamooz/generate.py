@@ -15,7 +15,7 @@ from darsamooz.balance import (
 )
 from darsamooz.config import Settings, get_settings
 from darsamooz.ingest import PHYSICS10_CHAPTERS
-from darsamooz.llm import LLMProvider, get_provider
+from darsamooz.llm import LLMProvider, get_provider, provider_call_summary
 from darsamooz.models import Difficulty, Question, Section
 from darsamooz.review import write_reviews_sidecar
 from darsamooz.runs import RunWriter
@@ -134,6 +134,23 @@ def generate_from_chapter(
     ).questions
 
 
+
+def _llm_item_fields(provider: LLMProvider) -> dict[str, Any]:
+    """Per-call provider/model/fallback visibility for run items.jsonl."""
+    call = getattr(provider, "last_call", None) or {}
+    if not call:
+        return {}
+    out: dict[str, Any] = {
+        "llm_provider": call.get("provider"),
+        "llm_model": call.get("model"),
+        "fallback_used": bool(call.get("fallback_used")),
+    }
+    if call.get("fallback_used"):
+        out["fallback_from"] = call.get("fallback_from")
+        out["fallback_reason"] = call.get("fallback_reason")
+    return out
+
+
 def generate_from_chapter_with_run(
     chapter_num: int,
     count: int = 10,
@@ -185,6 +202,7 @@ def generate_from_chapter_with_run(
             "sample": False,
             "provider": settings.provider_name,
             "model": model_name,
+            "fallback_provider": settings.fallback_provider_name,
             "units_scheduled": len(schedule),
             "verify": verify,
             "difficulty_mix": (
@@ -233,16 +251,17 @@ def generate_from_chapter_with_run(
             if usage.get("completion_tokens") is not None:
                 tokens_known = True
                 completion_tokens += int(usage["completion_tokens"] or 0)
+            llm_fields = _llm_item_fields(provider)
         except Exception as exc:
             last_error = exc
             empty_streak += 1
-            run.append_item(
-                {
-                    "status": "rejected",
-                    "reason": f"llm_error: {exc}",
-                    "section_id": sec.id,
-                }
-            )
+            err_item = {
+                "status": "rejected",
+                "reason": f"llm_error: {exc}",
+                "section_id": sec.id,
+            }
+            err_item.update(_llm_item_fields(provider))
+            run.append_item(err_item)
             rejected += 1
             if empty_streak >= EARLY_STOP_EMPTY_ROUNDS:
                 early_stop = True
@@ -316,14 +335,14 @@ def generate_from_chapter_with_run(
             accepted_stems.append(q.stem)
             section_for_qid[q.id] = sec.id
             accepted_this_round += 1
-            run.append_item(
-                {
-                    "status": "accepted",
-                    "id": q.id,
-                    "section_id": sec.id,
-                    "stem": q.stem[:160],
-                }
-            )
+            acc_item = {
+                "status": "accepted",
+                "id": q.id,
+                "section_id": sec.id,
+                "stem": q.stem[:160],
+            }
+            acc_item.update(llm_fields)
+            run.append_item(acc_item)
             if len(questions) >= count:
                 break
 
@@ -362,6 +381,7 @@ def generate_from_chapter_with_run(
             )
 
     dist = distribution_metrics(questions)
+    llm_meta = provider_call_summary(provider, settings=settings)
     metrics: dict[str, Any] = {
         "rounds": rounds,
         "accepted": len(questions),
@@ -377,6 +397,16 @@ def generate_from_chapter_with_run(
         ),
         **dist,
         **verify_metrics,
+        # Flat visibility fields for UI/job status (also nested under llm)
+        "fallback_enabled": llm_meta.get("fallback_enabled"),
+        "fallback_provider": llm_meta.get("fallback_provider"),
+        "fallback_count": llm_meta.get("fallback_count", 0),
+        "calls_by_provider": llm_meta.get("calls_by_provider", {}),
+        "fallback_reasons": llm_meta.get("fallback_reasons", []),
+        "llm_calls": llm_meta.get("llm_calls", 0),
+        "primary_provider": llm_meta.get("primary_provider"),
+        "primary_model": llm_meta.get("primary_model"),
+        "llm": llm_meta,
     }
     if last_error:
         metrics["last_error"] = str(last_error)

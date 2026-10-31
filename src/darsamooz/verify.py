@@ -4,7 +4,7 @@ import os
 from typing import Any
 
 from darsamooz.config import Settings, get_settings
-from darsamooz.llm import LLMProvider, OpenAICompatibleProvider, get_provider
+from darsamooz.llm import LLMProvider, get_provider, provider_call_summary
 from darsamooz.models import Question, ReviewStatus, Section
 
 VERIFY_SYSTEM = """You are a careful Iranian grade-10 physics tutor.
@@ -16,34 +16,20 @@ Set ambiguous=true if the unit text is insufficient or more than one option coul
 """
 
 
-class VerifyModelSettings:
-    """Thin adapter so OpenAICompatibleProvider can use VERIFY_MODEL when set."""
-
-    def __init__(self, base: Settings, model_override: str | None) -> None:
-        self._base = base
-        self._model_override = model_override
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._base, name)
-
-    @property
-    def model(self) -> str:
-        if self._model_override:
-            return self._model_override
-        return self._base.model
-
-
 def resolve_verify_provider(
     settings: Settings | None = None,
     provider: LLMProvider | None = None,
 ) -> LLMProvider:
-    """Same configured provider/model unless VERIFY_MODEL is set."""
+    """Same configured provider (incl. visible fallback) unless VERIFY_MODEL is set.
+
+    When VERIFY_MODEL is set, builds a fresh provider chain with that model override
+    so both primary and fallback use the verify model.
+    """
     settings = settings or get_settings()
     override = (os.environ.get("VERIFY_MODEL") or "").strip() or None
     if provider is not None and not override:
         return provider
-    wrapped = VerifyModelSettings(settings, override)
-    return OpenAICompatibleProvider(wrapped)  # type: ignore[arg-type]
+    return get_provider(settings, model_override=override)
 
 
 def _build_verify_prompt(question: Question, unit_text: str) -> str:
@@ -123,6 +109,7 @@ def verify_questions(
     """Verify a batch. section_text_by_id maps section id → unit text."""
     settings = settings or get_settings()
     provider = resolve_verify_provider(settings, provider)
+    history_before = len(getattr(provider, "call_history", []) or [])
     out: list[Question] = []
     mismatches = 0
     ambiguous = 0
@@ -168,6 +155,20 @@ def verify_questions(
             mismatches += 1
         out.append(verified)
 
+    llm_meta = provider_call_summary(provider, settings=settings)
+    # Prefer only calls made during this verify pass when history is available
+    history = list(llm_meta.get("call_history") or [])
+    verify_history = history[history_before:] if history_before <= len(history) else history
+    v_by: dict[str, int] = {}
+    v_fb = 0
+    v_reasons: list[str] = []
+    for c in verify_history:
+        p = str(c.get("provider") or "unknown")
+        v_by[p] = v_by.get(p, 0) + 1
+        if c.get("fallback_used"):
+            v_fb += 1
+            if c.get("fallback_reason"):
+                v_reasons.append(str(c["fallback_reason"])[:200])
     metrics = {
         "verify_enabled": True,
         "verify_count": len(questions),
@@ -177,6 +178,10 @@ def verify_questions(
         "needs_review": sum(
             1 for q in out if q.review_status == ReviewStatus.needs_review
         ),
+        "verify_llm_calls": len(verify_history),
+        "verify_fallback_count": v_fb,
+        "verify_calls_by_provider": v_by,
+        "verify_fallback_reasons": v_reasons,
     }
     return out, metrics
 

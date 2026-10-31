@@ -100,12 +100,18 @@ def create_app() -> FastAPI:
             model = None
         exports = _exports_dir(root)
         profiles = list_profiles(settings)
+        fb = None
+        try:
+            fb = settings.fallback_provider_name
+        except RuntimeError:
+            fb = None
         return {
             "version": __version__,
             "book_title": book_title,
             "chapters": chapters,
             "provider": provider,
             "model": model,
+            "fallback_provider": fb,
             "has_api_key": has_key,
             "exports_dir": str(exports.resolve()),
             "sample_chapter_only": 1,

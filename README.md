@@ -43,6 +43,8 @@ cp .env.example .env
 # در .env: LLM_PROVIDER و کلید/مدل مربوطه را بگذارید
 # مثال Gemini: GEMINI_API_KEY + GEMINI_MODEL=gemini-3.6-flash
 # مثال OpenRouter: LLM_PROVIDER=openrouter + OPENROUTER_API_KEY + OPENROUTER_MODEL=google/gemma-4-31b-it:free
+# Fallback قابل‌مشاهده هنگام خطای API جمینای: LLM_FALLBACK_PROVIDER=openrouter
+#   (لاگ هشدار + ثبت در metrics.json و وضعیت جاب UI؛ هرگز .env را commit نکنید)
 
 darsamooz chapters
 darsamooz ingest --pdf data/textbooks/physics10-riazi-110209.pdf
@@ -73,6 +75,7 @@ darsamooz db-sync
 ### بازبینی، تأیید جواب، تعادل و خروجی مشتری (MVP)
 - **بازبینی:** هر سؤال وضعیت `pending` / `approved` / `rejected` / `needs_review` دارد. در UI یا با `darsamooz review` تأیید/رد/ویرایش کنید. فقط تأییدشده‌ها: `darsamooz export-approved`.
 - **تأیید جواب:** بعد از تولید، یک پاس دوم LLM کور سؤال را حل می‌کند (`--verify` پیش‌فرض روشن؛ `--no-verify` برای خاموش). اختلاف یا ابهام → `needs_review` (حذف نمی‌شود). مدل جدا: `VERIFY_MODEL` در `.env`.
+- **Fallback LLM:** اگر `LLM_FALLBACK_PROVIDER=openrouter` باشد، هنگام خطای API ارائه‌دهندهٔ اصلی (۴۲۹/سهمیه، ۵xx، تایم‌اوت و …) به‌طور خودکار و **قابل‌مشاهده** به OpenRouter می‌رود (هشدار در لاگ، `fallback_count` / `calls_by_provider` / دلایل در `metrics.json` و UI). اگر fallback هم شکست بخورد، خطای واضح پرتاب می‌شود. خاموش: خالی/`none`.
 - **تعادل:** گزینه‌ی درست به‌صورت قطعی روی الف–د پخش می‌شود (`--balance-answers`). ترکیب سختی: `--difficulty-mix easy=30,medium=50,hard=20`. توزیع در `metrics.json` و UI.
 - **خروجی مشتری:** پروفایل نگاشت در `data/export_profiles/` (فعلاً فقط `generic`). وقتی فرمت import سایت مشتری رسید، یک JSON جدید اضافه کنید — فرمت مشتری را از خودمان اختراع نمی‌کنیم.
   ```bash
@@ -108,6 +111,7 @@ darsamooz to-md path/to/questions.json --out path/to/questions.md
 ### Review, verify, balance, client export (MVP)
 - **Review:** each question has `pending` / `approved` / `rejected` / `needs_review`. Approve/reject/edit in the web UI or via `darsamooz review`. Export approved-only with `darsamooz export-approved`.
 - **Answer verification:** after generation a blind second LLM pass solves each item (`--verify` on by default). Mismatch/ambiguity → `needs_review` (never silently dropped). Optional `VERIFY_MODEL` in `.env`.
+- **LLM fallback:** with `LLM_FALLBACK_PROVIDER=openrouter`, primary API errors (429/quota, 5xx, timeouts, other HTTP/API failures) **visibly** switch to OpenRouter — warning log, plus `fallback_count` / `calls_by_provider` / reasons in `metrics.json` and the web job status. Applies to generation and verify. If fallback also fails, a clear combined error is raised. Disable with empty/`none`.
 - **Balance:** correct options are deterministically redistributed over A–D (`--balance-answers`). Steer difficulty with `--difficulty-mix easy=30,medium=50,hard=20`. Distributions land in `metrics.json` and the UI.
 - **Client export:** mapping profiles live under `data/export_profiles/` (shipped: `generic` only). When the client's exam-site import format arrives, add a new profile JSON — do not invent their schema.
   ```bash
@@ -127,11 +131,12 @@ See `.env.example`. Select provider with `LLM_PROVIDER=gemini` | `openrouter` | 
 - `OPENROUTER_API_KEY` — local `.env` only
 - `OPENROUTER_MODEL` — exact model id (required). Free models end with `:free` (e.g. `google/gemma-4-31b-it:free`)
 - `OPENROUTER_BASE_URL` — defaults to `https://openrouter.ai/api/v1`
+- `LLM_FALLBACK_PROVIDER=openrouter` — optional visible fallback target when primary is e.g. Gemini
 
 **OpenAI-compatible**
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` when `LLM_PROVIDER=openai`
 
-There is **no silent model or syllabus fallback**. If the configured provider/model rejects a request, darsamooz raises the error.
+There is **no silent model or syllabus fallback**. Provider/model misconfiguration still raises. When `LLM_FALLBACK_PROVIDER` is set, primary **API** failures visibly fall back to that provider (logged and recorded); if both fail, the error is raised.
 
 ### Sample output
 - `samples/physics10_ch1_sample.json` — **5 hand-written SAMPLE** questions (no API key: `darsamooz generate --chapter 1 --sample`).
