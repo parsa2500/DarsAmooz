@@ -12,6 +12,13 @@ class Difficulty(str, Enum):
     hard = "hard"
 
 
+class ReviewStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    needs_review = "needs_review"
+
+
 class Question(BaseModel):
     """A single multiple-choice test item (تست چهارگزینه‌ای)."""
 
@@ -28,6 +35,13 @@ class Question(BaseModel):
     source_refs: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     is_sample: bool = False
+    review_status: ReviewStatus = ReviewStatus.pending
+    verifier_answer_index: int | None = Field(
+        default=None, ge=0, le=3, description="Blind verifier's chosen option index"
+    )
+    verifier_reason: str | None = None
+    verifier_agrees: bool | None = None
+    verifier_ambiguous: bool | None = None
 
     @field_validator("options")
     @classmethod
