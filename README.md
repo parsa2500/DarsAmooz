@@ -51,7 +51,7 @@ PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و ب
 ### Pipeline
 1. **Ingest** — `pdftotext` (poppler) → cleaned Persian text → chapter split  
 2. **Chunk** — paragraph-aware chunks for LLM context  
-3. **Generate** — AgentRouter / OpenAI-compatible API (`AGENTROUTER_*`, falling back to `OPENAI_*`; Responses API when required)  
+3. **Generate** — AgentRouter / OpenAI-compatible API (`AGENTROUTER_*`, falling back to `OPENAI_*`); questions are grounded in extracted chapter PDF text  
 4. **Validate** — exactly 4 options, one correct index, explanation, chapter, difficulty  
 5. **Export** — JSON + CSV (UTF-8 BOM for Excel)
 

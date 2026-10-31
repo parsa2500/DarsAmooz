@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from darsamooz.syllabus import build_generation_user_prompt
+from darsamooz.chunking import chunk_chapter
 from darsamooz.config import Settings, get_settings
 from darsamooz.ingest import PHYSICS10_CHAPTERS, load_extracted_chapters
 from darsamooz.llm import LLMProvider, get_provider
@@ -12,7 +12,7 @@ from darsamooz.models import Question
 from darsamooz.validate import validate_batch, validate_question_dict
 
 SYSTEM_PROMPT = """You are an exam-item writer for Iranian grade-10 physics (math track).
-Create multiple-choice questions (تست چهارگزینه‌ای) ONLY from the provided syllabus topics.
+Create multiple-choice questions (تست چهارگزینه‌ای) ONLY from the provided textbook source text.
 Return ONLY valid JSON:
 {
   "questions": [
@@ -20,23 +20,25 @@ Return ONLY valid JSON:
       "stem": "Persian question text",
       "options": ["opt1", "opt2", "opt3", "opt4"],
       "correct_index": 0,
-      "explanation": "short correct Persian explanation",
+      "explanation": "short correct Persian explanation grounded in the source",
       "difficulty": "easy|medium|hard",
       "section": "subsection name if known",
-      "tags": ["tag"]
+      "tags": ["tag"],
+      "source_refs": ["short quote or page cue from the source"]
     }
   ]
 }
 Hard rules:
+- Use ONLY facts, definitions, formulas, and examples present in the source text
 - Exactly 4 unique options; exactly one fully correct answer
 - correct_index must be 0..3 and match the correct option
 - Distractors must be plausible but wrong
 - Avoid "all of the above" / "none of the above"
-- Keep formulas, units, and numbers faithful to grade-10 physics; do not invent outside-syllabus facts
+- Keep formulas, units, and numbers faithful to the source; do not invent outside facts
 - Write stem and explanation in clear Persian (SI unit symbols like m, kg, s are OK)
 - Each item must be understandable without seeing the textbook
-- Do NOT repeat the same scenario/numbers across items (e.g. do not reuse the same 65 kg example twice)
-- Aim for a mix of difficulties when asked for several items (roughly easy/medium/hard)
+- Do NOT repeat the same scenario/numbers across items
+- Aim for a mix of difficulties when asked for several items
 """
 
 
@@ -57,7 +59,6 @@ def _stems_too_similar(a: str, b: str) -> bool:
         return False
     if na == nb:
         return True
-    # Distinctive number+unit motifs (e.g. "65 kg") should not repeat across items
     motif_re = re.compile(r"\d+(?:\.\d+)?\s*(?:kg|km|μm|mm|cm|m|s|n|j|w|pa|k)\b", re.I)
     motifs_a = {re.sub(r"\s+", "", m.group(0).lower()) for m in motif_re.finditer(na)}
     motifs_b = {re.sub(r"\s+", "", m.group(0).lower()) for m in motif_re.finditer(nb)}
@@ -77,6 +78,16 @@ def _chapter_title(num: int) -> str:
     return f"فصل {num}"
 
 
+def _build_chunk_prompt(chapter_num: int, title: str, chunk: str, count: int) -> str:
+    return (
+        f"کتاب: فیزیک (۱) پایه دهم رشته ریاضی و فیزیک (کد ۱۱۰۲۰۹)\n"
+        f"فصل {chapter_num}: {title}\n"
+        f"از متن منبع زیر دقیقاً {count} تست چهارگزینه‌ای بساز. "
+        f"فقط از همین متن استفاده کن؛ چیزی از بیرون اضافه نکن.\n\n"
+        f"--- متن منبع ---\n{chunk}\n--- پایان متن منبع ---\n"
+    )
+
+
 def generate_from_chapter(
     chapter_num: int,
     count: int = 10,
@@ -92,27 +103,30 @@ def generate_from_chapter(
             f"Chapter {chapter_num} not found. Run `darsamooz ingest` first."
         )
     chapter = chapters[chapter_num]
-    # Prefer syllabus topic packs: AgentRouter content-blocks raw Persian textbook dumps.
+    chunks = chunk_chapter(chapter)
+    if not chunks:
+        raise RuntimeError(
+            f"Chapter {chapter_num} has no extracted text. Re-run ingest on the PDF."
+        )
+
     provider = provider or get_provider(settings)
-    remaining = count
+    title = chapter.title or _chapter_title(chapter_num)
+    prefix = f"phys10-ch{chapter_num}"
     collected: list[dict] = []
     accepted_stems: list[str] = []
-    i = 0
-    max_rounds = max(10, (count + 3) // 4 * 4)
-    while remaining > 0 and i < max_rounds:
-        batch = min(4, remaining)
-        avoid = accepted_stems[-12:]
-        user = build_generation_user_prompt(
-            chapter, batch, topic_index=i, avoid_stems=avoid
-        )
+    max_rounds = max(len(chunks) * 2, (count + 3) // 4 * 3)
+
+    for i in range(max_rounds):
+        if len(collected) >= count:
+            break
+        chunk = chunks[i % len(chunks)]
+        batch = min(4, count - len(collected))
+        user = _build_chunk_prompt(chapter_num, title, chunk, batch)
         try:
             data = provider.complete_json(SYSTEM_PROMPT, user)
-        except Exception as exc:
-            # content-blocked / transient: try next topic focus without aborting
-            if i == 0 and not collected:
-                raise
-            i += 1
-            continue
+        except Exception:
+            # Surface the first hard failure clearly (no silent workaround).
+            raise
         items = data.get("questions", data if isinstance(data, list) else [])
         if not isinstance(items, list):
             items = []
@@ -126,11 +140,7 @@ def generate_from_chapter(
             accepted_stems.append(stem)
             if len(collected) >= count:
                 break
-        remaining = count - len(collected)
-        i += 1
 
-    title = chapter.title or _chapter_title(chapter_num)
-    prefix = f"phys10-ch{chapter_num}"
     questions: list[Question] = []
     for raw in collected:
         if len(questions) >= count:
@@ -140,13 +150,12 @@ def generate_from_chapter(
             q = validate_question_dict(
                 raw, chapter=chapter_num, chapter_title=title, qid=qid
             )
-            # drop if similar to already-validated
             if any(_stems_too_similar(q.stem, prev.stem) for prev in questions):
                 continue
             questions.append(q)
         except Exception:
             continue
-    if len(questions) < max(1, count // 2):
+    if len(questions) < max(1, count // 2) and collected:
         questions = validate_batch(
             collected[:count], chapter=chapter_num, chapter_title=title, id_prefix=prefix
         )
