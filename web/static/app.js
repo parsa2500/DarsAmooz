@@ -7,10 +7,32 @@
   const sampleEl = $("sample");
   const verifyEl = $("verify");
   const balanceEl = $("balance");
+  const styleMineEl = $("style-mine");
+  const styleMineHint = $("style-mine-hint");
   const mixEl = $("difficulty-mix");
+  const patternMixEl = $("pattern-mix");
+  const PATTERN_FA = {
+    tarifi: "تعریفی",
+    mafhumi: "مفهومی",
+    halli: "حلی",
+    tarkibi: "ترکیبی",
+  };
   const profileEl = $("export-profile");
+  const providerEl = $("llm-provider");
+  const modelEl = $("llm-model");
+  const modelListEl = $("llm-model-suggestions");
+  const providerHint = $("provider-hint");
   const btnStart = $("btn-start");
   const btnCancel = $("btn-cancel");
+  const bookSourceEl = $("book-source");
+  const uploadRow = $("upload-row");
+  const docFileEl = $("doc-file");
+  const btnIngestPdf = $("btn-ingest-pdf");
+  const uploadHint = $("upload-hint");
+  let providerCatalog = [];
+  let sourcesCatalog = [];
+  let defaultBookSlug = "physics10-riazi-110209";
+  let currentBookSlug = defaultBookSlug;
   const statusPanel = $("status-panel");
   const statusLabel = $("status-label");
   const statusDetail = $("status-detail");
@@ -38,10 +60,13 @@
   };
 
   async function api(path, options) {
-    const res = await fetch(path, {
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      ...options,
-    });
+    const opts = { ...options };
+    const headers = { Accept: "application/json", ...(opts.headers || {}) };
+    if (opts.body && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    opts.headers = headers;
+    const res = await fetch(path, opts);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = data.detail || res.statusText || "خطا";
@@ -50,8 +75,75 @@
     return data;
   }
 
+  function fillChapters(chapters) {
+    chapterEl.innerHTML = "";
+    (chapters || []).forEach((c) => {
+      const opt = document.createElement("option");
+      opt.value = c.number;
+      opt.textContent = `${c.number}. ${c.title}`;
+      chapterEl.appendChild(opt);
+    });
+  }
+
+  function syncSourceUi() {
+    const slug = bookSourceEl.value || defaultBookSlug;
+    currentBookSlug = slug;
+    const isUploadSlot = slug === "__upload__";
+    uploadRow.classList.toggle("hidden", !isUploadSlot && !slug.startsWith("doc-"));
+    if (isUploadSlot) {
+      uploadRow.classList.remove("hidden");
+      sampleEl.checked = false;
+      sampleEl.disabled = true;
+      fillChapters([]);
+      uploadHint.textContent = "PDF را انتخاب کنید تا متن استخراج و فصل‌ها ساخته شوند.";
+      uploadHint.className = "hint";
+      return;
+    }
+    const src = sourcesCatalog.find((s) => s.book_slug === slug);
+    fillChapters(src ? src.chapters : []);
+    const builtin = slug === defaultBookSlug;
+    sampleEl.disabled = !builtin;
+    if (!builtin) sampleEl.checked = false;
+    if (slug.startsWith("doc-")) {
+      uploadRow.classList.remove("hidden");
+      uploadHint.textContent = src
+        ? `منبع فعال: ${src.title || slug}`
+        : "می‌توانید PDF دیگری بخوانید.";
+      uploadHint.className = "hint ok";
+    } else {
+      uploadRow.classList.add("hidden");
+    }
+    if (src && src.title) {
+      $("book-title").textContent = src.title;
+    }
+  }
+
+  function rebuildSourceSelect(selectedSlug) {
+    bookSourceEl.innerHTML = "";
+    sourcesCatalog.forEach((s) => {
+      const opt = document.createElement("option");
+      opt.value = s.book_slug;
+      const kind = s.kind === "builtin" ? "کتاب" : "PDF";
+      opt.textContent = `${kind}: ${s.title || s.book_slug}`;
+      bookSourceEl.appendChild(opt);
+    });
+    const uploadOpt = document.createElement("option");
+    uploadOpt.value = "__upload__";
+    uploadOpt.textContent = "PDF جدید…";
+    bookSourceEl.appendChild(uploadOpt);
+    const pick =
+      selectedSlug ||
+      (sourcesCatalog.find((s) => s.book_slug === defaultBookSlug) || sourcesCatalog[0] || {})
+        .book_slug ||
+      defaultBookSlug;
+    if ([...bookSourceEl.options].some((o) => o.value === pick)) {
+      bookSourceEl.value = pick;
+    }
+    syncSourceUi();
+  }
+
   function setStatus(kind, label, detail) {
-    statusPanel.className = `status ${kind}`;
+    statusPanel.className = `status-strip ${kind}`;
     statusLabel.textContent = label;
     statusDetail.textContent = detail || "";
   }
@@ -108,11 +200,40 @@
     btnCancel.disabled = !busy;
     chapterEl.disabled = busy;
     countEl.disabled = busy;
-    sampleEl.disabled = busy;
+    const builtin = currentBookSlug === defaultBookSlug;
+    sampleEl.disabled = busy || !builtin;
     verifyEl.disabled = busy;
     balanceEl.disabled = busy;
+    if (styleMineEl) styleMineEl.disabled = busy || sampleEl.checked;
     mixEl.disabled = busy;
+    if (patternMixEl) patternMixEl.disabled = busy;
     profileEl.disabled = busy;
+    if (providerEl) providerEl.disabled = busy;
+    if (modelEl) modelEl.disabled = busy;
+    if (bookSourceEl) bookSourceEl.disabled = busy;
+    if (docFileEl) docFileEl.disabled = busy;
+    if (btnIngestPdf) btnIngestPdf.disabled = busy;
+  }
+
+  function applyProviderSelection(providerId, { keepModel } = { keepModel: false }) {
+    const entry = providerCatalog.find((p) => p.id === providerId) || providerCatalog[0];
+    if (!entry) return;
+    modelListEl.innerHTML = "";
+    (entry.model_suggestions || []).forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m;
+      modelListEl.appendChild(opt);
+    });
+    if (!keepModel || !modelEl.value.trim()) {
+      modelEl.value = entry.default_model || (entry.model_suggestions || [])[0] || "";
+    }
+    if (entry.has_api_key) {
+      providerHint.textContent = `کلید ${entry.label} آماده است.`;
+      providerHint.className = "hint ok";
+    } else {
+      providerHint.textContent = `کلید API برای ${entry.label} نیست — یا provider دیگر را انتخاب کنید یا حالت نمونه.`;
+      providerHint.className = "hint warn";
+    }
   }
 
   function stopPoll() {
@@ -195,6 +316,7 @@
         <header>
           <span class="q-num">${i + 1}</span>
           <span class="pill">${escapeHtml(q.difficulty || "")}</span>
+          <span class="pill">${escapeHtml(PATTERN_FA[q.pattern] || q.pattern || "")}</span>
           <span class="pill status-${rev}">${statusFa[rev] || rev}</span>
           <span class="muted q-id">${escapeHtml(q.id || "")}</span>
         </header>
@@ -288,14 +410,25 @@
       setBusy(true);
       setStatus("running", "شروع…", "");
       renderLog([]);
+      if (!currentBookSlug || currentBookSlug === "__upload__") {
+        throw new Error("ابتدا یک PDF بخوانید یا منبع را انتخاب کنید.");
+      }
+      if (!chapterEl.value) {
+        throw new Error("فصلی برای این منبع موجود نیست.");
+      }
       const body = {
         chapter: Number(chapterEl.value),
         count: Number(countEl.value),
         sample: sampleEl.checked,
+        book_slug: currentBookSlug,
         verify: verifyEl.checked,
+        style_mine: !!(styleMineEl && styleMineEl.checked && !sampleEl.checked),
         balance_answers: balanceEl.checked,
         difficulty_mix: mixEl.value.trim() || null,
+        pattern_mix: patternMixEl && patternMixEl.value.trim() ? patternMixEl.value.trim() : null,
         export_profile: profileEl.value || null,
+        llm_provider: providerEl && providerEl.value ? providerEl.value : null,
+        llm_model: modelEl && modelEl.value.trim() ? modelEl.value.trim() : null,
       };
       const job = await api("/api/generate", { method: "POST", body: JSON.stringify(body) });
       currentJobId = job.id;
@@ -336,6 +469,45 @@
     }
   });
 
+  bookSourceEl.addEventListener("change", () => {
+    syncSourceUi();
+  });
+
+  btnIngestPdf.addEventListener("click", async () => {
+    const file = docFileEl.files && docFileEl.files[0];
+    if (!file) {
+      uploadHint.textContent = "ابتدا یک فایل PDF انتخاب کنید.";
+      uploadHint.className = "hint warn";
+      return;
+    }
+    try {
+      btnIngestPdf.disabled = true;
+      setStatus("running", "خواندن PDF…", file.name);
+      uploadHint.textContent = "در حال استخراج متن…";
+      uploadHint.className = "hint";
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      const data = await api("/api/documents", { method: "POST", body: fd });
+      const docs = await api("/api/documents");
+      sourcesCatalog = docs.sources || [];
+      rebuildSourceSelect(data.book_slug);
+      currentBookSlug = data.book_slug;
+      bookSourceEl.value = data.book_slug;
+      syncSourceUi();
+      fillChapters(data.chapters || []);
+      const nCh = (data.chapters || []).length;
+      uploadHint.textContent = `خوانده شد: ${nCh} فصل · ${data.title || data.book_slug}`;
+      uploadHint.className = "hint ok";
+      setStatus("ok", "PDF خوانده شد", `${nCh} فصل آماده تولید`);
+    } catch (err) {
+      uploadHint.textContent = err.message;
+      uploadHint.className = "hint warn";
+      setStatus("err", "خواندن PDF ناموفق", err.message);
+    } finally {
+      btnIngestPdf.disabled = false;
+    }
+  });
+
   async function boot() {
     try {
       const meta = await api("/api/meta");
@@ -343,14 +515,17 @@
       $("version-badge").textContent = `v${meta.version}`;
       const modelBit = meta.model ? ` · ${meta.model}` : "";
       const fbBit = meta.fallback_provider ? ` → fallback:${meta.fallback_provider}` : "";
-    $("provider-badge").textContent = `${meta.provider}${modelBit}${fbBit}`;
-      chapterEl.innerHTML = "";
-      (meta.chapters || []).forEach((c) => {
-        const opt = document.createElement("option");
-        opt.value = c.number;
-        opt.textContent = `${c.number}. ${c.title}`;
-        chapterEl.appendChild(opt);
-      });
+      $("provider-badge").textContent = `${meta.provider}${modelBit}${fbBit}`;
+      defaultBookSlug = meta.default_book_slug || "physics10-riazi-110209";
+      sourcesCatalog = meta.sources || [
+        {
+          book_slug: defaultBookSlug,
+          title: meta.book_title,
+          kind: "builtin",
+          chapters: meta.chapters || [],
+        },
+      ];
+      rebuildSourceSelect(defaultBookSlug);
       profileEl.innerHTML = `<option value="">— بدون خروجی پروفایلی —</option>`;
       (meta.export_profiles || []).forEach((p) => {
         const opt = document.createElement("option");
@@ -358,8 +533,30 @@
         opt.textContent = `${p.id} — ${p.name || p.label || ""}`;
         profileEl.appendChild(opt);
       });
-      if (meta.has_api_key) {
-        keyHint.textContent = "کلید API پیدا شد؛ می‌توانید تولید واقعی بزنید.";
+
+      providerCatalog = meta.providers || [];
+      providerEl.innerHTML = "";
+      providerCatalog.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = `${p.label}${p.has_api_key ? "" : " (بدون کلید)"}`;
+        if (p.is_default) opt.selected = true;
+        providerEl.appendChild(opt);
+      });
+      const selected =
+        providerCatalog.find((p) => p.is_default)?.id ||
+        providerCatalog.find((p) => p.has_api_key)?.id ||
+        (providerCatalog[0] && providerCatalog[0].id);
+      if (selected) {
+        providerEl.value = selected;
+        applyProviderSelection(selected);
+      }
+      providerEl.addEventListener("change", () => {
+        applyProviderSelection(providerEl.value);
+      });
+
+      if (meta.has_api_key || providerCatalog.some((p) => p.has_api_key)) {
+        keyHint.textContent = "حداقل یک کلید API پیدا شد؛ provider و مدل را انتخاب کنید.";
         keyHint.className = "hint ok";
       } else {
         keyHint.textContent =
@@ -369,9 +566,48 @@
       }
       verifyEl.checked = meta.verify_default !== false;
 
+      if (styleMineHint) {
+        const ready =
+          meta.style_mine_ready !== undefined
+            ? meta.style_mine_ready
+            : meta.has_api_key;
+        if (ready) {
+          styleMineHint.textContent =
+            "با همان کلید LLM: ترجیحاً OpenRouter برای جستجوی وب؛ محتوا فقط از متن منبع.";
+          styleMineHint.className = "hint ok";
+        } else {
+          styleMineHint.textContent =
+            "برای الگوبرداری وب، کلید OpenRouter/Gemini/OpenAI را در .env بگذارید.";
+          styleMineHint.className = "hint warn";
+          if (styleMineEl) styleMineEl.checked = false;
+        }
+      }
+      if (styleMineEl) {
+        styleMineEl.addEventListener("change", () => {
+          if (styleMineEl.checked && sampleEl.checked) {
+            sampleEl.checked = false;
+          }
+        });
+      }
+      sampleEl.addEventListener("change", () => {
+        if (sampleEl.checked && styleMineEl) {
+          styleMineEl.checked = false;
+          styleMineEl.disabled = true;
+        } else if (styleMineEl) {
+          styleMineEl.disabled = false;
+        }
+      });
+
       const active = await api("/api/jobs/active");
       if (active.job && (active.job.status === "running" || active.job.status === "queued")) {
         currentJobId = active.job.id;
+        if (active.job.book_slug) {
+          currentBookSlug = active.job.book_slug;
+          if ([...bookSourceEl.options].some((o) => o.value === currentBookSlug)) {
+            bookSourceEl.value = currentBookSlug;
+            syncSourceUi();
+          }
+        }
         setBusy(true);
         renderLog(active.job.logs);
         startPoll(active.job.id);
@@ -386,7 +622,7 @@
           await loadPreview(active.job.prefix);
         }
       } else {
-        setStatus("idle", "آماده", "فصل و تعداد را انتخاب کنید.");
+        setStatus("idle", "آماده", "منبع، فصل و تعداد را انتخاب کنید.");
       }
     } catch (err) {
       setStatus("err", "بارگذاری نشد", err.message);

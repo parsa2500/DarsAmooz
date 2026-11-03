@@ -19,17 +19,23 @@ Set ambiguous=true if the unit text is insufficient or more than one option coul
 def resolve_verify_provider(
     settings: Settings | None = None,
     provider: LLMProvider | None = None,
+    *,
+    provider_override: str | None = None,
 ) -> LLMProvider:
-    """Same configured provider (incl. visible fallback) unless VERIFY_MODEL is set.
+    """Same run provider (incl. visible fallback) unless VERIFY_MODEL is set.
 
-    When VERIFY_MODEL is set, builds a fresh provider chain with that model override
-    so both primary and fallback use the verify model.
+    When VERIFY_MODEL is set, builds a fresh chain with that model on the same
+    primary provider (run override or settings default).
     """
     settings = settings or get_settings()
     override = (os.environ.get("VERIFY_MODEL") or "").strip() or None
     if provider is not None and not override:
         return provider
-    return get_provider(settings, model_override=override)
+    return get_provider(
+        settings,
+        provider_override=provider_override,
+        model_override=override,
+    )
 
 
 def _build_verify_prompt(question: Question, unit_text: str) -> str:
@@ -105,10 +111,13 @@ def verify_questions(
     section_text_by_id: dict[str, str],
     provider: LLMProvider | None = None,
     settings: Settings | None = None,
+    provider_override: str | None = None,
 ) -> tuple[list[Question], dict[str, Any]]:
     """Verify a batch. section_text_by_id maps section id → unit text."""
     settings = settings or get_settings()
-    provider = resolve_verify_provider(settings, provider)
+    provider = resolve_verify_provider(
+        settings, provider, provider_override=provider_override
+    )
     history_before = len(getattr(provider, "call_history", []) or [])
     out: list[Question] = []
     mismatches = 0

@@ -25,7 +25,10 @@ def test_export_roundtrip(tmp_path: Path):
     j = export_json(qs, tmp_path / "out.json")
     c = export_csv(qs, tmp_path / "out.csv")
     assert j.exists() and c.exists()
-    assert "option_a" in c.read_text(encoding="utf-8")
+    csv_text = c.read_text(encoding="utf-8")
+    assert "option_a" in csv_text
+    assert "pattern" in csv_text
+    assert "pattern_fa" in csv_text
 
 
 def test_export_markdown_rtl_and_details(tmp_path: Path):
@@ -38,6 +41,7 @@ def test_export_markdown_rtl_and_details(tmp_path: Path):
     assert "<details>" in text and "<summary>پاسخ و توضیح</summary>" in text
     assert "پاسخ صحیح:" in text
     assert "نقل از متن کتاب:" in text
+    assert "الگوی سوال:" in text
     assert qs[0].stem in text
     # Convert path: JSON -> MD matches render
     roundtrip = load_questions_from_json(export_json(qs, tmp_path / "round.json"))

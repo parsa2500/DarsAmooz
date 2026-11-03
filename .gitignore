@@ -21,6 +21,8 @@ htmlcov/
 
 # Textbook PDFs (copyright — download via scripts/)
 data/textbooks/*.pdf
+data/uploads/*
+!data/uploads/.gitkeep
 data/extracted/*
 !data/extracted/.gitkeep
 !data/manifests/

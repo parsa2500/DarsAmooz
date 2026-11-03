@@ -3,7 +3,12 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from darsamooz.models import Difficulty, Question
+from darsamooz.balance import (
+    halli_missing_calc_signal,
+    looks_like_soft_hard,
+    normalize_pattern_token,
+)
+from darsamooz.models import Difficulty, Question, QuestionPattern
 
 _ARABIC_DIACRITICS = re.compile(r"[\u064B-\u065F\u0670]")
 _WHITESPACE = re.compile(r"\s+")
@@ -98,6 +103,20 @@ def validate_question_dict(
     if not any("\u0600" <= c <= "\u06FF" for c in explanation):
         raise ValueError("explanation must contain Persian text")
 
+    pattern_raw = raw.get("pattern") or raw.get("question_pattern") or "mafhumi"
+    try:
+        pattern = normalize_pattern_token(str(pattern_raw))
+    except ValueError as exc:
+        raise ValueError(f"invalid pattern {pattern_raw!r}") from exc
+
+    if halli_missing_calc_signal(stem, opts, pattern):
+        raise ValueError("halli pattern requires numeric/formula signal in stem or options")
+
+    hard_downgraded = False
+    if looks_like_soft_hard(stem, opts, difficulty):
+        difficulty = Difficulty.medium
+        hard_downgraded = True
+
     refs = [str(r).strip() for r in (raw.get("source_refs") or []) if str(r).strip()]
     if require_grounding:
         if not refs:
@@ -109,6 +128,11 @@ def validate_question_dict(
     section_id = raw.get("section_id")
     if section_id and f"section:{section_id}" not in tags:
         tags = [*tags, f"section:{section_id}"]
+    pattern_tag = f"pattern:{pattern.value}"
+    if pattern_tag not in tags:
+        tags = [*tags, pattern_tag]
+    if hard_downgraded and "hard_downgraded" not in tags:
+        tags = [*tags, "hard_downgraded"]
 
     return Question(
         id=qid,
@@ -120,6 +144,7 @@ def validate_question_dict(
         correct_index=int(correct),
         explanation=explanation,
         difficulty=difficulty,
+        pattern=pattern,
         source_refs=refs,
         tags=tags,
         is_sample=bool(raw.get("is_sample", False)),

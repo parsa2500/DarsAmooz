@@ -42,6 +42,10 @@ def test_meta(client):
     assert "book_title" in data
     assert len(data["chapters"]) >= 5
     assert data["chapters"][0]["number"] == 1
+    patterns = data.get("question_patterns") or []
+    ids = {p["id"] for p in patterns}
+    assert ids == {"tarifi", "mafhumi", "halli", "tarkibi"}
+    assert any(p.get("label_fa") == "تعریفی" for p in patterns)
 
 
 def test_index_serves_html(client):

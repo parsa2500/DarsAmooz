@@ -10,6 +10,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 load_dotenv()
 
 _VALID_PROVIDERS = frozenset({"gemini", "openrouter", "openai"})
+VALID_PROVIDERS = _VALID_PROVIDERS
+
+# Suggested model ids shown in UI (free-text still allowed).
+_MODEL_SUGGESTIONS: dict[str, list[str]] = {
+    "gemini": ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"],
+    "openrouter": [
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "google/gemma-4-31b-it:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+    ],
+    "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1"],
+}
 
 
 def _first_env(*names: str, default: str | None = None) -> str | None:
@@ -29,6 +41,15 @@ def provider_api_key(provider: str) -> str | None:
     if name == "openai":
         return _first_env("OPENAI_API_KEY")
     raise ValueError(f"unknown provider {provider!r}")
+
+
+def tavily_api_key(settings: Settings | None = None) -> str | None:
+    """Tavily key from settings field or TAVILY_API_KEY env."""
+    if settings is not None:
+        field = (settings.tavily_api_key or "").strip()
+        if field:
+            return field
+    return _first_env("TAVILY_API_KEY")
 
 
 def provider_base_url(provider: str) -> str:
@@ -93,6 +114,7 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("data")
     textbooks_dir: Path = Path("data/textbooks")
+    uploads_dir: Path = Path("data/uploads")
     extracted_dir: Path = Path("data/extracted")
     exports_dir: Path = Path("data/exports")
     manifests_dir: Path = Path("data/manifests")
@@ -100,6 +122,8 @@ class Settings(BaseSettings):
     # Explicit selector: gemini | openrouter | openai
     llm_provider: str | None = None
     llm_fallback_provider: str | None = None
+    # Optional: web style mining (Tavily). Also read via tavily_api_key().
+    tavily_api_key: str | None = None
 
     @property
     def provider_name(self) -> str:
@@ -144,6 +168,10 @@ class Settings(BaseSettings):
     def model(self) -> str:
         return provider_model(self.provider_name)
 
+    @property
+    def has_tavily_key(self) -> bool:
+        return bool(tavily_api_key(self))
+
     # Back-compat aliases
     @property
     def openai_api_key(self) -> str | None:
@@ -176,6 +204,7 @@ class ProviderSettingsView:
         # expose path attrs used by some callers
         self.data_dir = base.data_dir
         self.textbooks_dir = base.textbooks_dir
+        self.uploads_dir = base.uploads_dir
         self.extracted_dir = base.extracted_dir
         self.exports_dir = base.exports_dir
         self.manifests_dir = base.manifests_dir
@@ -205,3 +234,70 @@ class ProviderSettingsView:
 
 def get_settings() -> Settings:
     return Settings()
+
+
+def normalize_provider_id(provider: str | None) -> str | None:
+    if provider is None:
+        return None
+    name = provider.strip().lower()
+    if not name:
+        return None
+    if name not in _VALID_PROVIDERS:
+        raise ValueError(
+            f"Unsupported provider {provider!r}. Use: {', '.join(sorted(_VALID_PROVIDERS))}."
+        )
+    return name
+
+
+def list_provider_catalog(settings: Settings | None = None) -> list[dict]:
+    """Providers + key status + default/suggested models for UI/CLI."""
+    settings = settings or get_settings()
+    catalog: list[dict] = []
+    for name in ("openrouter", "gemini", "openai"):
+        key = provider_api_key(name)
+        default_model = None
+        try:
+            default_model = provider_model(name)
+        except RuntimeError:
+            default_model = None
+        suggestions = list(_MODEL_SUGGESTIONS.get(name, []))
+        if default_model and default_model not in suggestions:
+            suggestions = [default_model, *suggestions]
+        catalog.append(
+            {
+                "id": name,
+                "label": {"gemini": "Gemini", "openrouter": "OpenRouter", "openai": "OpenAI"}.get(
+                    name, name
+                ),
+                "has_api_key": bool(key),
+                "default_model": default_model,
+                "model_suggestions": suggestions,
+                "is_default": name == settings.provider_name,
+            }
+        )
+    return catalog
+
+
+def resolve_llm_selection(
+    settings: Settings | None = None,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+) -> tuple[str, str | None, ProviderSettingsView]:
+    """
+    Resolve runtime primary provider/model for one generate call.
+
+    Returns (provider_id, model_or_none, ProviderSettingsView).
+    model may be None only when reading catalog; for live calls model is required
+    via env or explicit override.
+    """
+    settings = settings or get_settings()
+    provider_id = normalize_provider_id(provider) or settings.provider_name
+    model_override = (model or "").strip() or None
+    view = ProviderSettingsView(settings, provider_id, model_override=model_override)
+    resolved_model: str | None
+    try:
+        resolved_model = view.model
+    except RuntimeError:
+        resolved_model = model_override
+    return provider_id, resolved_model, view

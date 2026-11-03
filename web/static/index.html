@@ -3,70 +3,140 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>درس‌آموز — تولید تست</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <title>درس‌آموز</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=operate3" />
 </head>
 <body>
-  <div class="wrap">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">DarsAmooz</p>
-        <h1>تولید تست از کتاب درسی</h1>
-        <p class="sub" id="book-title">…</p>
+  <!--
+    THESIS: Operator worksheet for grounded MCQ generation — grouped controls, not a marketing hero or identical cards.
+    OWN-WORLD: Cool slate paper, lab-teal ink, Vazirmatn RTL, ruled panels, 2px radius.
+    STORY: Set chapter and model, run generate, watch status, review items with pattern/difficulty badges.
+    FIRST VIEWPORT: Brand درس‌آموز + book + provider strip; work column (3 field groups) + status column.
+    FORM: Exam-desk Operate (redesign pass).
+    FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+  -->
+  <div class="page">
+    <header class="masthead">
+      <div class="brand-block">
+        <p class="brand">درس‌آموز</p>
+        <p class="brand-en" lang="en">DarsAmooz</p>
       </div>
-      <div class="badge-stack">
-        <span class="badge" id="provider-badge">—</span>
-        <span class="badge muted" id="version-badge">v?</span>
+      <div class="masthead-meta">
+        <p id="book-title" class="book-title">…</p>
+        <p id="provider-badge" class="provider-line">—</p>
+        <p id="version-badge" class="version-line">v?</p>
       </div>
     </header>
 
-    <main class="grid">
-      <section class="card">
-        <h2>تنظیمات تولید</h2>
-        <form id="generate-form">
-          <label>
-            فصل
-            <select id="chapter" name="chapter" required></select>
-          </label>
-          <label>
-            تعداد سؤال
-            <input id="count" name="count" type="number" min="1" max="100" value="10" required />
-          </label>
-          <label class="check">
-            <input id="sample" name="sample" type="checkbox" />
-            حالت نمونه (بدون LLM — فقط فصل ۱)
-          </label>
-          <label class="check">
-            <input id="verify" name="verify" type="checkbox" checked />
-            تأیید جواب با مدل دوم (پیش‌فرض روشن)
-          </label>
-          <label class="check">
-            <input id="balance" name="balance" type="checkbox" checked />
-            پخش یکنواخت گزینه‌ی درست (الف–د)
-          </label>
-          <label>
-            ترکیب سختی (مثلاً easy=30,medium=50,hard=20)
-            <input id="difficulty-mix" name="difficulty_mix" type="text" placeholder="خالی = آزاد" />
-          </label>
-          <label>
-            پروفایل خروجی مشتری
-            <select id="export-profile" name="export_profile">
-              <option value="">— بدون خروجی پروفایلی —</option>
-            </select>
-          </label>
-          <p class="hint" id="key-hint"></p>
-          <div class="actions">
-            <button type="submit" class="btn primary" id="btn-start">شروع تولید</button>
-            <button type="button" class="btn danger" id="btn-cancel" disabled>توقف</button>
+    <div class="workspace">
+      <section class="panel work-panel" aria-labelledby="workHeading">
+        <h1 id="workHeading">تولید تست</h1>
+        <p class="lede">از متن فصل کتاب، تست چهارگزینه‌ای بسازید؛ خروجی را همین‌جا بازبینی کنید.</p>
+
+        <form id="generate-form" class="gen-form">
+          <fieldset class="field-group">
+            <legend>محتوا</legend>
+            <label class="field">
+              <span>منبع</span>
+              <select id="book-source" name="book_source"></select>
+            </label>
+            <div id="upload-row" class="upload-row hidden">
+              <label class="field file-field">
+                <span>PDF منبع</span>
+                <input id="doc-file" type="file" accept="application/pdf,.pdf" />
+              </label>
+              <button type="button" class="btn btn-small" id="btn-ingest-pdf">خواندن PDF</button>
+              <p class="hint" id="upload-hint">PDF را انتخاب کنید تا متن استخراج و فصل‌ها ساخته شوند.</p>
+            </div>
+            <div class="field-row">
+              <label class="field">
+                <span>فصل</span>
+                <select id="chapter" name="chapter" required></select>
+              </label>
+              <label class="field">
+                <span>تعداد سؤال</span>
+                <input id="count" name="count" type="number" min="1" max="100" value="10" required />
+              </label>
+            </div>
+            <label class="check">
+              <input id="sample" name="sample" type="checkbox" />
+              <span>حالت نمونه <span class="hint-inline">(بدون LLM — فقط فیزیک ۱۰، فصل ۱)</span></span>
+            </label>
+          </fieldset>
+
+          <fieldset class="field-group">
+            <legend>مدل</legend>
+            <div class="field-row">
+              <label class="field">
+                <span>Provider</span>
+                <select id="llm-provider" name="llm_provider"></select>
+              </label>
+              <label class="field">
+                <span>مدل</span>
+                <input id="llm-model" name="llm_model" type="text" list="llm-model-suggestions" placeholder="مثلاً gemini-3.6-flash" autocomplete="off" />
+                <datalist id="llm-model-suggestions"></datalist>
+              </label>
+            </div>
+            <p class="hint" id="provider-hint"></p>
+            <p class="hint" id="key-hint"></p>
+          </fieldset>
+
+          <fieldset class="field-group">
+            <legend>کیفیت خروجی</legend>
+            <div class="check-row">
+              <label class="check compact">
+                <input id="verify" name="verify" type="checkbox" checked />
+                <span>تأیید با مدل دوم</span>
+              </label>
+              <label class="check compact">
+                <input id="balance" name="balance" type="checkbox" checked />
+                <span>پخش یکنواخت الف–د</span>
+              </label>
+            </div>
+            <details class="advanced-block">
+              <summary>تنظیمات پیشرفته</summary>
+              <div class="advanced-body">
+                <label class="check">
+                  <input id="style-mine" name="style_mine" type="checkbox" />
+                  <span>الگوبرداری از تست‌های مشابه وب</span>
+                </label>
+                <p class="hint" id="style-mine-hint">سبک از وب/مدل؛ محتوا فقط از متن منبع. با همان کلید LLM.</p>
+                <label class="field">
+                  <span>ترکیب سختی</span>
+                  <input id="difficulty-mix" name="difficulty_mix" type="text" placeholder="easy=30,medium=50,hard=20" />
+                </label>
+                <label class="field">
+                  <span>ترکیب الگو</span>
+                  <input id="pattern-mix" name="pattern_mix" type="text" placeholder="tarifi=20,mafhumi=40,halli=30,tarkibi=10" />
+                </label>
+                <label class="field">
+                  <span>پروفایل خروجی مشتری</span>
+                  <select id="export-profile" name="export_profile">
+                    <option value="">— بدون خروجی پروفایلی —</option>
+                  </select>
+                </label>
+              </div>
+            </details>
+          </fieldset>
+
+          <div class="action-bar">
+            <button type="submit" class="btn btn-primary" id="btn-start">شروع تولید</button>
+            <button type="button" class="btn btn-ghost" id="btn-cancel" disabled>توقف</button>
           </div>
         </form>
       </section>
 
-      <section class="card">
-        <h2>وضعیت</h2>
-        <div id="status-panel" class="status idle">
-          <p id="status-label">آماده</p>
-          <p id="status-detail" class="muted"></p>
+      <aside class="panel status-panel status-rail" aria-labelledby="statusHeading">
+        <h2 id="statusHeading">وضعیت</h2>
+        <div id="status-panel" class="status-strip idle" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div class="status-copy">
+            <p id="status-label">آماده</p>
+            <p id="status-detail" class="status-detail"></p>
+          </div>
         </div>
         <div class="log-box">
           <h3>لاگ</h3>
@@ -76,32 +146,34 @@
           <h3>خروجی</h3>
           <p id="result-summary"></p>
           <ul id="result-paths"></ul>
-          <p class="hint">فایل‌ها در پوشهٔ data\exports ذخیره می‌شوند.</p>
+          <p class="hint">فایل‌ها در <code>data\exports</code> ذخیره می‌شوند.</p>
         </div>
-      </section>
-    </main>
+      </aside>
+    </div>
 
-    <section class="card preview-card">
+    <section class="panel preview-panel" aria-labelledby="previewHeading">
       <div class="preview-head">
-        <h2>بازبینی سؤالات</h2>
+        <h2 id="previewHeading">بازبینی سؤالات</h2>
         <div class="preview-actions">
           <label class="check compact">
             <input id="approved-only-view" type="checkbox" />
-            فقط تأییدشده‌ها
+            <span>فقط تأییدشده‌ها</span>
           </label>
-          <button type="button" class="btn" id="btn-export-approved" disabled>خروجی تأییدشده‌ها</button>
-          <button type="button" class="btn" id="btn-reload-preview" disabled>بارگذاری مجدد</button>
+          <button type="button" class="btn btn-small" id="btn-export-approved" disabled>خروجی تأییدشده‌ها</button>
+          <button type="button" class="btn btn-small" id="btn-reload-preview" disabled>بارگذاری مجدد</button>
         </div>
       </div>
-      <p id="review-summary" class="muted"></p>
-      <div id="preview-empty" class="muted">بعد از تولید موفق، سؤالات اینجا برای تأیید/رد/ویرایش ظاهر می‌شوند.</div>
-      <div id="preview-list"></div>
+      <p id="review-summary" class="review-summary"></p>
+      <p id="preview-empty" class="empty">بعد از تولید موفق، سؤالات اینجا برای تأیید، رد یا ویرایش ظاهر می‌شوند.</p>
+      <div id="preview-list" class="preview-list"></div>
     </section>
 
-    <footer>
-      <p>بدون جایگزین بی‌صدا · خروجی فقط از متن کتاب · کلید API در <code>.env</code></p>
+    <footer class="foot">
+      <span>بدون جایگزین بی‌صدا · خروجی از متن کتاب · کلید API فقط در <code>.env</code></span>
+      <span class="foot-sep" aria-hidden="true">·</span>
+      <span>فقط روی همین رایانه</span>
     </footer>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js" defer></script>
 </body>
 </html>

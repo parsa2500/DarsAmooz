@@ -100,6 +100,11 @@ def ingest_cmd(pdf: Path, slug: str) -> None:
     help="Target mix, e.g. easy=30,medium=50,hard=20",
 )
 @click.option(
+    "--pattern-mix",
+    default=None,
+    help="Target pattern mix, e.g. tarifi=20,mafhumi=40,halli=30,tarkibi=10",
+)
+@click.option(
     "--balance-answers/--no-balance-answers",
     default=True,
     show_default=True,
@@ -115,6 +120,19 @@ def ingest_cmd(pdf: Path, slug: str) -> None:
     default=None,
     help=f"Also write a mapped client export using profile id (default profiles: {DEFAULT_PROFILE_ID})",
 )
+@click.option(
+    "--provider",
+    "llm_provider",
+    type=click.Choice(["gemini", "openrouter", "openai"], case_sensitive=False),
+    default=None,
+    help="Override LLM_PROVIDER for this run only",
+)
+@click.option(
+    "--model",
+    "llm_model",
+    default=None,
+    help="Override model id for this run (must match the chosen provider)",
+)
 def generate_cmd(
     chapter: int,
     count: int,
@@ -122,11 +140,16 @@ def generate_cmd(
     sample: bool,
     verify: bool,
     difficulty_mix: str | None,
+    pattern_mix: str | None,
     balance_answers: bool,
     approved_only: bool,
     export_profile: str | None,
+    llm_provider: str | None,
+    llm_model: str | None,
 ) -> None:
     """Generate multiple-choice questions for a chapter."""
+    from darsamooz.config import resolve_llm_selection
+
     settings = get_settings()
     prefix = out_prefix or f"phys10-ch{chapter}"
 
@@ -149,24 +172,34 @@ def generate_cmd(
                 questions, prefix=prefix, settings=settings, approved_only=True
             )
     else:
-        if not settings.api_key:
+        try:
+            provider_id, model_id, view = resolve_llm_selection(
+                settings, provider=llm_provider, model=llm_model
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if not view.api_key:
             raise click.ClickException(
-                "API key missing for LLM_PROVIDER="
-                f"{settings.provider_name}. Set GEMINI_API_KEY (or OPENAI_API_KEY) "
-                "in .env, or pass --sample for demo output."
+                f"API key missing for provider={provider_id}. "
+                "Set the matching *_API_KEY in .env, or pass --sample."
+            )
+        if not model_id:
+            raise click.ClickException(
+                f"Model missing for provider={provider_id}. "
+                "Pass --model or set the matching *_MODEL in .env."
             )
         try:
-            click.echo(
-                f"Provider={settings.provider_name} model={settings.model} "
-                f"verify={verify}"
-            )
+            click.echo(f"Provider={provider_id} model={model_id} verify={verify}")
             result = generate_from_chapter_with_run(
                 chapter,
                 count=count,
                 settings=settings,
                 verify=verify,
                 difficulty_mix=difficulty_mix,
+                pattern_mix=pattern_mix,
                 balance_answers=balance_answers,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
             )
         except (RuntimeError, FileNotFoundError, ValueError) as exc:
             raise click.ClickException(str(exc)) from exc

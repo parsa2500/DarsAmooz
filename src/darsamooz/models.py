@@ -12,6 +12,15 @@ class Difficulty(str, Enum):
     hard = "hard"
 
 
+class QuestionPattern(str, Enum):
+    """Iranian grade-10 physics MCQ pattern (الگوی سوال)."""
+
+    tarifi = "tarifi"  # تعریفی
+    mafhumi = "mafhumi"  # مفهومی
+    halli = "halli"  # حلی / محاسباتی
+    tarkibi = "tarkibi"  # ترکیبی
+
+
 class ReviewStatus(str, Enum):
     pending = "pending"
     approved = "approved"
@@ -32,6 +41,7 @@ class Question(BaseModel):
     correct_index: int = Field(..., ge=0, le=3, description="0-based index of correct option")
     explanation: str = Field(..., min_length=3)
     difficulty: Difficulty = Difficulty.medium
+    pattern: QuestionPattern = QuestionPattern.mafhumi
     source_refs: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     is_sample: bool = False

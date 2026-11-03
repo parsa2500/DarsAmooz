@@ -25,22 +25,26 @@ Generation is grounded in extracted chapter PDF text (not generic quiz inventing
 ## Capabilities
 
 - Ingest Physics 10 (math track, book 110209) via CLI
-- Generate questions per chapter (CLI or local web UI)
-- Sample mode without API key (chapter 1 bundled sample)
+- Upload an arbitrary PDF in the local web UI as a generation source (`POST /api/documents`)
+- Generate questions per chapter (CLI or local web UI) from the built-in book or an uploaded PDF
+- Optional web style mining via existing LLM APIs (OpenRouter web search preferred): structure few-shots; facts stay grounded in source text
+- Sample mode without API key (Physics 10 chapter 1 bundled sample)
 - Export JSON, CSV (Excel BOM), RTL Markdown
 - Windows desktop shortcuts: start local web UI / stop processes
 
 ## Constraints
 
 - No exam-taking UI, no user accounts
-- Textbook PDF is copyrighted; not committed to git
+- Textbook / uploaded PDFs are copyrighted; not committed to git
 - Localhost-only web UI (127.0.0.1)
 - API keys stay in `.env` (never exposed to the browser)
-- Ingest remains CLI-only in the first web UI phase
+- Upload ingest is PDF-only via `pdftotext` (no DOCX/OCR)
+- Web style mining reuses OpenRouter/Gemini/OpenAI keys; never copies web question text as facts
 
 ## Terminology
 
-- فصل / chapter — Physics 10 chapters 1–5
+- فصل / chapter — book or document sections used as generation units
+- منبع / book_slug — Physics 10 builtin or an uploaded document id
 - تست چهارگزینه‌ای — four-option MCQ
 - حالت نمونه — bundled sample output (no LLM)
 - خروجی — files under `data/exports/`

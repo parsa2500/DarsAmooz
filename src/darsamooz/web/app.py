@@ -1,18 +1,31 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from darsamooz import __version__
-from darsamooz.config import get_settings
-from darsamooz.ingest import PHYSICS10_CHAPTERS
-from darsamooz.models import ReviewStatus
+from darsamooz.config import (
+    get_settings,
+    list_provider_catalog,
+    normalize_provider_id,
+)
+from darsamooz.ingest import (
+    PHYSICS10_CHAPTERS,
+    PHYSICS10_SLUG,
+    ingest_document_pdf,
+    list_book_chapters,
+    list_document_sources,
+    make_document_slug,
+)
+from darsamooz.balance import PATTERN_LABEL_FA
+from darsamooz.models import QuestionPattern, ReviewStatus
 from darsamooz.profiles import DEFAULT_PROFILE_ID, list_profiles
 from darsamooz.review import (
     apply_review_edit,
@@ -25,16 +38,23 @@ from darsamooz.review import (
 from darsamooz.web.jobs import JobManager
 
 _OPTION_LETTERS = ("الف", "ب", "ج", "د")
+_MAX_UPLOAD_BYTES = 40 * 1024 * 1024
+_SAFE_UPLOAD_NAME = re.compile(r"[^a-zA-Z0-9._\u0600-\u06FF-]+")
 
 
 class GenerateBody(BaseModel):
     chapter: int = Field(..., ge=1, le=20)
     count: int = Field(10, ge=1, le=100)
     sample: bool = False
+    book_slug: str = PHYSICS10_SLUG
     verify: bool = True
+    style_mine: bool = False
     difficulty_mix: str | None = None
+    pattern_mix: str | None = None
     balance_answers: bool = True
     export_profile: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class ReviewBody(BaseModel):
@@ -62,6 +82,22 @@ def _exports_dir(root: Path) -> Path:
     return exports
 
 
+def _resolved_settings(root: Path):
+    settings = get_settings()
+    for attr in (
+        "data_dir",
+        "textbooks_dir",
+        "uploads_dir",
+        "extracted_dir",
+        "exports_dir",
+        "manifests_dir",
+    ):
+        p = getattr(settings, attr)
+        if not Path(p).is_absolute():
+            setattr(settings, attr, (root / p).resolve())
+    return settings
+
+
 def create_app() -> FastAPI:
     root = project_root()
     jobs = JobManager(root)
@@ -79,7 +115,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/meta")
     def meta() -> dict:
-        settings = get_settings()
+        settings = _resolved_settings(root)
         manifest_path = root / "data" / "manifests" / "physics10-riazi-110209.json"
         book_title = "فیزیک (۱) — پایه دهم"
         chapters = [{"number": n, "title": t} for n, t in PHYSICS10_CHAPTERS]
@@ -105,37 +141,131 @@ def create_app() -> FastAPI:
             fb = settings.fallback_provider_name
         except RuntimeError:
             fb = None
+        providers = list_provider_catalog(settings)
+        sources = list_document_sources(settings)
+        # Prefer manifest titles for the builtin physics source when present
+        for src in sources:
+            if src["book_slug"] == PHYSICS10_SLUG:
+                src["title"] = book_title
+                src["chapters"] = chapters
         return {
             "version": __version__,
             "book_title": book_title,
             "chapters": chapters,
+            "default_book_slug": PHYSICS10_SLUG,
+            "sources": sources,
             "provider": provider,
             "model": model,
             "fallback_provider": fb,
             "has_api_key": has_key,
+            "providers": providers,
             "exports_dir": str(exports.resolve()),
             "sample_chapter_only": 1,
             "export_profiles": [{**p, "label": p.get("name") or p.get("id")} for p in profiles],
             "default_export_profile": DEFAULT_PROFILE_ID,
             "verify_default": True,
+            "max_upload_bytes": _MAX_UPLOAD_BYTES,
+            "has_tavily_key": False,
+            "style_mine_ready": bool(settings.api_key),
+            "question_patterns": [
+                {"id": p.value, "label_fa": PATTERN_LABEL_FA[p]} for p in QuestionPattern
+            ],
+        }
+
+    @app.get("/api/documents")
+    def documents() -> dict:
+        settings = _resolved_settings(root)
+        return {"sources": list_document_sources(settings)}
+
+    @app.post("/api/documents")
+    async def upload_document(file: UploadFile = File(...)) -> dict:
+        settings = _resolved_settings(root)
+        filename = Path(file.filename or "document.pdf").name
+        if not filename.lower().endswith(".pdf"):
+            raise HTTPException(400, detail="فقط فایل PDF پذیرفته می‌شود.")
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(400, detail="فایل خالی است.")
+        if len(raw) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                400,
+                detail=f"حجم فایل بیش از {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB است.",
+            )
+        safe_name = _SAFE_UPLOAD_NAME.sub("-", filename).strip("-_.") or "document.pdf"
+        if not safe_name.lower().endswith(".pdf"):
+            safe_name += ".pdf"
+        book_slug = make_document_slug(filename)
+        uploads = Path(settings.uploads_dir)
+        uploads.mkdir(parents=True, exist_ok=True)
+        dest = uploads / f"{book_slug}.pdf"
+        dest.write_bytes(raw)
+        try:
+            chapters, section_counts = ingest_document_pdf(
+                dest,
+                book_slug,
+                title=Path(filename).stem or safe_name,
+                settings=settings,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(500, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, detail=f"خواندن PDF ناموفق: {exc}") from exc
+        return {
+            "book_slug": book_slug,
+            "title": Path(filename).stem or book_slug,
+            "source_filename": filename,
+            "chapters": [{"number": c.number, "title": c.title} for c in chapters],
+            "section_counts": {str(k): v for k, v in section_counts.items()},
         }
 
     @app.post("/api/generate")
     def generate(payload: Annotated[GenerateBody, Body()]) -> dict:
-        known = {n for n, _ in PHYSICS10_CHAPTERS}
+        settings = _resolved_settings(root)
+        book_slug = (payload.book_slug or PHYSICS10_SLUG).strip() or PHYSICS10_SLUG
+        chapters = list_book_chapters(book_slug, settings)
+        known = {int(c["number"]) for c in chapters}
+        if not known and book_slug == PHYSICS10_SLUG:
+            known = {n for n, _ in PHYSICS10_CHAPTERS}
         if payload.chapter not in known:
             raise HTTPException(400, detail=f"فصل نامعتبر: {payload.chapter}")
-        if payload.sample and payload.chapter != 1:
-            raise HTTPException(400, detail="حالت نمونه فقط برای فصل ۱ است.")
+        if payload.sample and (book_slug != PHYSICS10_SLUG or payload.chapter != 1):
+            raise HTTPException(
+                400,
+                detail="حالت نمونه فقط برای کتاب فیزیک ۱۰، فصل ۱ است.",
+            )
+        if payload.style_mine and payload.sample:
+            raise HTTPException(
+                400,
+                detail="الگوبرداری وب با حالت نمونه سازگار نیست.",
+            )
+        if payload.style_mine and not settings.api_key:
+            raise HTTPException(
+                400,
+                detail="برای الگوبرداری وب همان کلید LLM (OpenRouter/Gemini/OpenAI) لازم است.",
+            )
+        llm_provider = None
+        llm_model = (payload.llm_model or "").strip() or None
+        if payload.llm_provider:
+            try:
+                llm_provider = normalize_provider_id(payload.llm_provider)
+            except ValueError as exc:
+                raise HTTPException(400, detail=str(exc)) from exc
         try:
             job = jobs.start(
                 payload.chapter,
                 payload.count,
                 payload.sample,
+                book_slug=book_slug,
                 verify=payload.verify,
+                style_mine=payload.style_mine,
                 difficulty_mix=payload.difficulty_mix,
+                pattern_mix=payload.pattern_mix,
                 balance_answers=payload.balance_answers,
                 export_profile=payload.export_profile,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
             )
         except RuntimeError as exc:
             raise HTTPException(409, detail=str(exc)) from exc

@@ -22,6 +22,7 @@ dependencies = [
 web = [
   "fastapi>=0.115,<0.129",
   "uvicorn[standard]>=0.32",
+  "python-multipart>=0.0.9",
 ]
 # Reserved for future neural embeddings; Phase 2 BM25/TF-IDF needs no extra deps.
 retrieval = []
@@ -30,6 +31,7 @@ dev = [
   "ruff>=0.4",
   "fastapi>=0.115,<0.129",
   "uvicorn[standard]>=0.32",
+  "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

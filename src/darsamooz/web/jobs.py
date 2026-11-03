@@ -16,6 +16,7 @@ from darsamooz.generate import (
     persist_generation,
     persist_sample_run,
 )
+from darsamooz.ingest import PHYSICS10_SLUG, export_prefix_for
 
 
 class JobStatus(str, Enum):
@@ -32,10 +33,15 @@ class Job:
     chapter: int
     count: int
     sample: bool
+    book_slug: str = PHYSICS10_SLUG
     verify: bool = True
+    style_mine: bool = False
     difficulty_mix: str | None = None
+    pattern_mix: str | None = None
     balance_answers: bool = True
     export_profile: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
     status: JobStatus = JobStatus.queued
     logs: list[str] = field(default_factory=list)
     error: str | None = None
@@ -59,10 +65,15 @@ class Job:
             "chapter": self.chapter,
             "count": self.count,
             "sample": self.sample,
+            "book_slug": self.book_slug,
             "verify": self.verify,
+            "style_mine": self.style_mine,
             "difficulty_mix": self.difficulty_mix,
+            "pattern_mix": self.pattern_mix,
             "balance_answers": self.balance_answers,
             "export_profile": self.export_profile,
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
             "status": self.status.value,
             "logs": list(self.logs),
             "error": self.error,
@@ -99,10 +110,15 @@ class JobManager:
         count: int,
         sample: bool,
         *,
+        book_slug: str = PHYSICS10_SLUG,
         verify: bool = True,
+        style_mine: bool = False,
         difficulty_mix: str | None = None,
+        pattern_mix: str | None = None,
         balance_answers: bool = True,
         export_profile: str | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
     ) -> Job:
         with self._lock:
             active = self.active()
@@ -113,10 +129,15 @@ class JobManager:
                 chapter=chapter,
                 count=count,
                 sample=sample,
+                book_slug=book_slug or PHYSICS10_SLUG,
                 verify=verify,
+                style_mine=bool(style_mine),
                 difficulty_mix=difficulty_mix,
+                pattern_mix=pattern_mix,
                 balance_answers=balance_answers,
                 export_profile=export_profile,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
             )
             self._jobs[job.id] = job
             self._active_id = job.id
@@ -148,7 +169,14 @@ class JobManager:
 
     def _settings(self) -> Settings:
         settings = get_settings()
-        for attr in ("data_dir", "textbooks_dir", "extracted_dir", "exports_dir", "manifests_dir"):
+        for attr in (
+            "data_dir",
+            "textbooks_dir",
+            "uploads_dir",
+            "extracted_dir",
+            "exports_dir",
+            "manifests_dir",
+        ):
             p = getattr(settings, attr)
             if not Path(p).is_absolute():
                 setattr(settings, attr, (self.project_root / p).resolve())
@@ -165,12 +193,14 @@ class JobManager:
                 job.log("لغو شد.")
                 return
 
-            prefix = f"phys10-ch{job.chapter}"
+            prefix = export_prefix_for(job.book_slug, job.chapter)
             job.prefix = prefix
 
             if job.sample:
-                if job.chapter != 1:
-                    raise RuntimeError("حالت نمونه فقط برای فصل ۱ در دسترس است.")
+                if job.book_slug != PHYSICS10_SLUG or job.chapter != 1:
+                    raise RuntimeError(
+                        "حالت نمونه فقط برای کتاب فیزیک ۱۰، فصل ۱ در دسترس است."
+                    )
                 job.log("بارگذاری سوالات نمونه (بدون LLM)…")
                 questions = load_sample_questions()[: job.count]
                 paths, run, questions = persist_sample_run(
@@ -183,16 +213,32 @@ class JobManager:
                 job.metrics = dict(run.metrics)
                 job.log(f"{len(questions)} سوال نمونه — run_id={run.run_id}")
             else:
-                if not settings.api_key:
+                from darsamooz.config import resolve_llm_selection
+
+                provider_id, model_id, view = resolve_llm_selection(
+                    settings,
+                    provider=job.llm_provider,
+                    model=job.llm_model,
+                )
+                if not view.api_key:
                     raise RuntimeError(
-                        f"کلید API برای LLM_PROVIDER={settings.provider_name} تنظیم نشده. "
+                        f"کلید API برای provider={provider_id} تنظیم نشده. "
                         "در .env کلید را بگذارید یا حالت نمونه را روشن کنید."
                     )
+                if not model_id:
+                    raise RuntimeError(
+                        f"مدل برای provider={provider_id} مشخص نیست. "
+                        "مدل را در UI انتخاب کنید یا *_MODEL را در .env بگذارید."
+                    )
                 fb = settings.fallback_provider_name
+                if fb and fb == provider_id:
+                    fb = None
                 fb_bit = f"، fallback={fb}" if fb else ""
+                style_bit = "، style_mine=on" if job.style_mine else ""
                 job.log(
-                    f"تولید با {settings.provider_name} / {settings.model}{fb_bit} — "
-                    f"فصل {job.chapter}، تعداد {job.count}، verify={job.verify}…"
+                    f"تولید با {provider_id} / {model_id}{fb_bit} — "
+                    f"{job.book_slug} فصل {job.chapter}، تعداد {job.count}، "
+                    f"verify={job.verify}{style_bit}…"
                 )
                 if job._cancel.is_set():
                     job.status = JobStatus.cancelled
@@ -202,9 +248,15 @@ class JobManager:
                     job.chapter,
                     count=job.count,
                     settings=settings,
+                    book_slug=job.book_slug,
                     verify=job.verify,
                     difficulty_mix=job.difficulty_mix,
+                    pattern_mix=job.pattern_mix,
                     balance_answers=job.balance_answers,
+                    llm_provider=job.llm_provider,
+                    llm_model=job.llm_model,
+                    style_mine=job.style_mine,
+                    on_log=job.log,
                 )
                 if job._cancel.is_set():
                     job.status = JobStatus.cancelled

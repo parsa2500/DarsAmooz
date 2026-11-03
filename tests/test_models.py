@@ -15,6 +15,8 @@ def test_question_requires_four_unique_options():
 
 
 def test_question_ok():
+    from darsamooz.models import QuestionPattern
+
     q = Question(
         id="t1",
         chapter=1,
@@ -24,3 +26,4 @@ def test_question_ok():
         explanation="چون ج درست است",
     )
     assert q.correct_index == 2
+    assert q.pattern == QuestionPattern.mafhumi

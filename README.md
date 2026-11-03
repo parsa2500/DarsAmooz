@@ -50,6 +50,10 @@ darsamooz chapters
 darsamooz ingest --pdf data/textbooks/physics10-riazi-110209.pdf
 darsamooz generate --chapter 1 --count 20
 
+# انتخاب provider/مدل فقط برای همین اجرا (بدون تغییر .env):
+darsamooz generate --chapter 1 --count 10 --provider gemini --model gemini-3.6-flash
+darsamooz generate --chapter 1 --count 5 --provider openrouter --model google/gemma-4-31b-it:free
+
 # بدون کلید API — خروجی نمونهٔ دستی فصل ۱:
 darsamooz generate --chapter 1 --sample
 
@@ -75,13 +79,14 @@ darsamooz db-sync
 ### بازبینی، تأیید جواب، تعادل و خروجی مشتری (MVP)
 - **بازبینی:** هر سؤال وضعیت `pending` / `approved` / `rejected` / `needs_review` دارد. در UI یا با `darsamooz review` تأیید/رد/ویرایش کنید. فقط تأییدشده‌ها: `darsamooz export-approved`.
 - **تأیید جواب:** بعد از تولید، یک پاس دوم LLM کور سؤال را حل می‌کند (`--verify` پیش‌فرض روشن؛ `--no-verify` برای خاموش). اختلاف یا ابهام → `needs_review` (حذف نمی‌شود). مدل جدا: `VERIFY_MODEL` در `.env`.
+- **الگوبرداری وب (اختیاری):** در UI گزینه «الگوبرداری از تست‌های مشابه وب» — با همان کلید LLM (ترجیحاً OpenRouter و ابزار web_search)، استخراج *سبک/ساختار* به‌صورت few-shot، ذخیره در `style_pack.json`. محتوا و `source_refs` همچنان فقط از متن منبع شماست.
 - **Fallback LLM:** پیش‌فرض `LLM_PROVIDER=openrouter` و `LLM_FALLBACK_PROVIDER=gemini`. هنگام خطای API ارائه‌دهندهٔ اصلی (۴۲۹/سهمیه، ۵xx، تایم‌اوت و …) به‌طور خودکار و **قابل‌مشاهده** به fallback می‌رود (هشدار در لاگ، `fallback_count` / `calls_by_provider` / دلایل در `metrics.json` و UI) — هر دو جهت openrouter↔gemini پشتیبانی می‌شود. اگر fallback هم شکست بخورد، خطای واضح پرتاب می‌شود. خاموش: خالی یا none.
-- **تعادل:** گزینه‌ی درست به‌صورت قطعی روی الف–د پخش می‌شود (`--balance-answers`). ترکیب سختی: `--difficulty-mix easy=30,medium=50,hard=20`. توزیع در `metrics.json` و UI.
+- **تعادل:** گزینه‌ی درست به‌صورت قطعی روی الف–د پخش می‌شود (`--balance-answers`). ترکیب سختی با روبریک واقعی کنکور/دهم: `--difficulty-mix easy=30,medium=50,hard=20` (hard جعلیِ تعریفی به medium تنزل می‌یابد). ترکیب الگو: `--pattern-mix tarifi=20,mafhumi=40,halli=30,tarkibi=10` (تعریفی/مفهومی/حلی/ترکیبی). توزیع سختی و الگو در `metrics.json` و UI.
 - **خروجی مشتری:** پروفایل نگاشت در `data/export_profiles/` (فعلاً فقط `generic`). وقتی فرمت import سایت مشتری رسید، یک JSON جدید اضافه کنید — فرمت مشتری را از خودمان اختراع نمی‌کنیم.
   ```bash
   darsamooz profiles
   darsamooz export-client data/exports/phys10-ch1.json --profile generic --out data/exports/phys10-ch1.generic.json
-  darsamooz generate --chapter 1 --count 10 --verify --difficulty-mix easy=30,medium=50,hard=20 --export-profile generic
+  darsamooz generate --chapter 1 --count 10 --verify --difficulty-mix easy=30,medium=50,hard=20 --pattern-mix tarifi=20,mafhumi=40,halli=30,tarkibi=10 --export-profile generic
   ```
 
 ### نکته حقوقی
@@ -111,8 +116,9 @@ darsamooz to-md path/to/questions.json --out path/to/questions.md
 ### Review, verify, balance, client export (MVP)
 - **Review:** each question has `pending` / `approved` / `rejected` / `needs_review`. Approve/reject/edit in the web UI or via `darsamooz review`. Export approved-only with `darsamooz export-approved`.
 - **Answer verification:** after generation a blind second LLM pass solves each item (`--verify` on by default). Mismatch/ambiguity → `needs_review` (never silently dropped). Optional `VERIFY_MODEL` in `.env`.
+- **Web style mining (optional):** UI toggle uses your existing LLM keys (OpenRouter web search preferred) for structure-only few-shots (`style_pack.json`). Facts/`source_refs` stay grounded in your source text.
 - **LLM fallback:** defaults are `LLM_PROVIDER=openrouter` and `LLM_FALLBACK_PROVIDER=gemini`. Primary API errors (429/quota, 5xx, timeouts, other HTTP/API failures) **visibly** switch to the fallback — warning log, plus `fallback_count` / `calls_by_provider` / reasons in `metrics.json` and the web job status. Works both ways (openrouter↔gemini). Applies to generation and verify. If fallback also fails, a clear combined error is raised. Disable with empty/none.
-- **Balance:** correct options are deterministically redistributed over A–D (`--balance-answers`). Steer difficulty with `--difficulty-mix easy=30,medium=50,hard=20`. Distributions land in `metrics.json` and the UI.
+- **Balance:** correct options are redistributed over A–D (`--balance-answers`). Steer difficulty with `--difficulty-mix easy=30,medium=50,hard=20` (soft fake-hard definitional items are downgraded). Steer patterns with `--pattern-mix tarifi=20,mafhumi=40,halli=30,tarkibi=10`. Distributions land in `metrics.json` and the UI.
 - **Client export:** mapping profiles live under `data/export_profiles/` (shipped: `generic` only). When the client's exam-site import format arrives, add a new profile JSON — do not invent their schema.
   ```bash
   darsamooz profiles
@@ -135,6 +141,8 @@ See `.env.example`. Default provider is **openrouter**. Select with `LLM_PROVIDE
 
 **OpenAI-compatible**
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` when `LLM_PROVIDER=openai`
+
+**Web style mining** reuses `OPENROUTER_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` (no separate search key).
 
 There is **no silent model or syllabus fallback**. Provider/model misconfiguration still raises. When `LLM_FALLBACK_PROVIDER` is set, primary **API** failures visibly fall back to that provider (logged and recorded); if both fail, the error is raised.
 

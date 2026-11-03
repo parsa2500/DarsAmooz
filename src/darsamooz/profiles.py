@@ -65,6 +65,8 @@ def _get_source_value(q: Question, key: str, letters: list[str]) -> Any:
         return letters[q.correct_index]
     if key == "difficulty":
         return q.difficulty.value
+    if key == "pattern":
+        return q.pattern.value
     if key == "review_status":
         return q.review_status.value
     if key == "options":

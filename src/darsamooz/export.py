@@ -4,7 +4,8 @@ import csv
 import json
 from pathlib import Path
 
-from darsamooz.models import Question
+from darsamooz.balance import PATTERN_LABEL_FA
+from darsamooz.models import Question, QuestionPattern
 from darsamooz.validate import validate_batch
 
 _OPTION_LETTERS_FA = ("الف", "ب", "ج", "د")
@@ -48,6 +49,8 @@ def export_csv(questions: list[Question], path: Path) -> Path:
         "correct_letter",
         "explanation",
         "difficulty",
+        "pattern",
+        "pattern_fa",
         "review_status",
         "verifier_agrees",
         "tags",
@@ -74,6 +77,8 @@ def export_csv(questions: list[Question], path: Path) -> Path:
                     "correct_letter": letters[q.correct_index],
                     "explanation": q.explanation,
                     "difficulty": q.difficulty.value,
+                    "pattern": q.pattern.value,
+                    "pattern_fa": _pattern_fa(q),
                     "review_status": q.review_status.value,
                     "verifier_agrees": q.verifier_agrees
                     if q.verifier_agrees is not None
@@ -88,6 +93,11 @@ def export_csv(questions: list[Question], path: Path) -> Path:
 def _difficulty_fa(q: Question) -> str:
     key = q.difficulty.value if hasattr(q.difficulty, "value") else str(q.difficulty)
     return _DIFFICULTY_FA.get(key, key)
+
+
+def _pattern_fa(q: Question) -> str:
+    p = q.pattern if isinstance(q.pattern, QuestionPattern) else QuestionPattern(str(q.pattern))
+    return PATTERN_LABEL_FA.get(p, p.value)
 
 
 def render_markdown(
@@ -140,6 +150,8 @@ def render_markdown(
         lines.append(f"**توضیح:** {q.explanation.strip()}")
         lines.append("")
         lines.append(f"**سطح دشواری:** {_difficulty_fa(q)}")
+        lines.append("")
+        lines.append(f"**الگوی سوال:** {_pattern_fa(q)}")
         lines.append("")
         lines.append(f"**وضعیت بازبینی:** {status}")
         lines.append("")

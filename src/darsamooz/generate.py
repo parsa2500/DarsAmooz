@@ -7,16 +7,21 @@ from pathlib import Path
 from typing import Any
 
 from darsamooz.balance import (
+    DIFFICULTY_RUBRIC_FA,
+    PATTERN_RUBRIC_FA,
     assign_target_difficulties,
+    assign_target_patterns,
     balance_answer_positions,
     difficulty_prompt_hint,
     distribution_metrics,
     parse_difficulty_mix,
+    parse_pattern_mix,
+    pattern_prompt_hint,
 )
 from darsamooz.config import Settings, get_settings
-from darsamooz.ingest import PHYSICS10_CHAPTERS
+from darsamooz.ingest import chapter_title_for, export_prefix_for
 from darsamooz.llm import LLMProvider, get_provider, provider_call_summary
-from darsamooz.models import Difficulty, Question, Section
+from darsamooz.models import Difficulty, Question, QuestionPattern, Section
 from darsamooz.review import write_reviews_sidecar
 from darsamooz.runs import RunWriter
 from darsamooz.sections import load_sections
@@ -24,8 +29,16 @@ from darsamooz.validate import validate_batch, validate_question_dict
 from darsamooz.verify import sections_to_text_map, verify_questions
 
 SYSTEM_PROMPT = """You write Iranian grade-10 physics MCQs (تست چهارگزینه‌ای) ONLY from the given unit text.
-Return ONLY JSON: {"questions":[{"stem":"...","options":["a","b","c","d"],"correct_index":0,"explanation":"...","difficulty":"easy|medium|hard","section":"...","source_refs":["verbatim quote from unit"]}]}
-Rules: exactly 4 unique options; one correct; Persian stem/explanation; no invented facts; source_refs must be a short continuous phrase copied from the unit text."""
+Return ONLY JSON:
+{"questions":[{"stem":"...","options":["a","b","c","d"],"correct_index":0,"explanation":"...","difficulty":"easy|medium|hard","pattern":"tarifi|mafhumi|halli|tarkibi","section":"...","source_refs":["verbatim quote from unit"]}]}
+Rules:
+- exactly 4 unique options; one correct; Persian stem/explanation
+- no invented facts; source_refs = short continuous phrase copied from the unit text
+- difficulty MUST follow the rubric in the user message (hard ≠ restating a definition)
+- pattern MUST match: tarifi=تعریفی, mafhumi=مفهومی, halli=حلی/numeric, tarkibi=ترکیبی
+- halli items MUST include numbers/calculation grounded in the unit
+- if a web style-pack block is present, use it ONLY for stem/option structure and trap style — never copy web facts or stems; all truth stays in the unit text
+"""
 
 
 _ARABIC_DIACRITICS = re.compile(r"[\u064B-\u065F\u0670]")
@@ -67,11 +80,12 @@ def _stems_too_similar(a: str, b: str) -> bool:
     return overlap >= 0.85
 
 
-def _chapter_title(num: int) -> str:
-    for n, t in PHYSICS10_CHAPTERS:
-        if n == num:
-            return t
-    return f"فصل {num}"
+def _chapter_title(
+    num: int,
+    book_slug: str = "physics10-riazi-110209",
+    settings: Settings | None = None,
+) -> str:
+    return chapter_title_for(book_slug, num, settings)
 
 
 def _build_unit_prompt(
@@ -81,14 +95,29 @@ def _build_unit_prompt(
     count: int,
     *,
     target_difficulty: Difficulty | None = None,
+    target_pattern: QuestionPattern | None = None,
+    style_block: str = "",
+    book_label: str = "فیزیک (۱) دهم ریاضی (۱۱۰۲۰۹)",
 ) -> str:
-    hint = difficulty_prompt_hint(target_difficulty)
+    d_hint = difficulty_prompt_hint(target_difficulty)
+    p_hint = pattern_prompt_hint(target_pattern)
+    rubric_block = "\n".join(
+        [
+            "روبریک سختی:",
+            *[f"- {v}" for v in DIFFICULTY_RUBRIC_FA.values()],
+            "روبریک الگو:",
+            *[f"- {v}" for v in PATTERN_RUBRIC_FA.values()],
+        ]
+    )
+    style = f"\n{style_block}\n" if (style_block or "").strip() else "\n"
     return (
-        f"کتاب: فیزیک (۱) دهم ریاضی (۱۱۰۲۰۹)\n"
+        f"کتاب/منبع: {book_label}\n"
         f"فصل {chapter_num}: {chapter_title}\n"
         f"یونیت: {section.id} — {section.title}\n"
         f"دقیقاً {count} تست بساز؛ فقط از متن یونیت.\n"
-        f"{hint}\n\n"
+        f"{d_hint}\n{p_hint}\n"
+        f"{style}"
+        f"{rubric_block}\n\n"
         f"--- یونیت ---\n{section.text}\n--- پایان ---\n"
     )
 
@@ -120,7 +149,11 @@ def generate_from_chapter(
     book_slug: str = "physics10-riazi-110209",
     verify: bool = True,
     difficulty_mix: str | dict | None = None,
+    pattern_mix: str | dict | None = None,
     balance_answers: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    style_mine: bool = False,
 ) -> list[Question]:
     return generate_from_chapter_with_run(
         chapter_num,
@@ -130,7 +163,11 @@ def generate_from_chapter(
         book_slug=book_slug,
         verify=verify,
         difficulty_mix=difficulty_mix,
+        pattern_mix=pattern_mix,
         balance_answers=balance_answers,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        style_mine=style_mine,
     ).questions
 
 
@@ -160,7 +197,12 @@ def generate_from_chapter_with_run(
     book_slug: str = "physics10-riazi-110209",
     verify: bool = True,
     difficulty_mix: str | dict | None = None,
+    pattern_mix: str | dict | None = None,
     balance_answers: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    style_mine: bool = False,
+    on_log: Any | None = None,
 ) -> GenerationResult:
     settings = settings or get_settings()
     sections = load_sections(book_slug, chapter_num, settings)
@@ -179,20 +221,93 @@ def generate_from_chapter_with_run(
     else:
         mix_norm = parse_difficulty_mix(difficulty_mix)
 
-    title = _chapter_title(chapter_num)
+    if isinstance(pattern_mix, dict):
+        pm = {
+            (QuestionPattern(k) if not isinstance(k, QuestionPattern) else k): float(v)
+            for k, v in pattern_mix.items()
+        }
+        ptotal = sum(pm.values())
+        pattern_norm = {k: v / ptotal for k, v in pm.items()} if ptotal else None
+    else:
+        pattern_norm = parse_pattern_mix(pattern_mix)
+
+    title = _chapter_title(chapter_num, book_slug, settings)
     schedule = plan_unit_schedule(sections, count)
     if not schedule:
         raise RuntimeError(f"Chapter {chapter_num} has no usable section text.")
 
     targets = assign_target_difficulties(count, mix_norm)
     target_iter = iter(targets)
+    pattern_targets = assign_target_patterns(count, pattern_norm)
+    pattern_iter = iter(pattern_targets)
 
-    provider = provider or get_provider(settings)
-    model_name: str | None = None
-    try:
-        model_name = settings.model
-    except RuntimeError:
-        model_name = None
+    provider = provider or get_provider(
+        settings,
+        provider_override=llm_provider,
+        model_override=llm_model,
+    )
+    primary_name = getattr(provider, "primary_name", None) or getattr(
+        provider, "provider_label", None
+    ) or (llm_provider or settings.provider_name)
+    model_name: str | None = getattr(provider, "primary_model", None) or getattr(
+        provider, "model_label", None
+    )
+    if model_name is None:
+        try:
+            from darsamooz.config import resolve_llm_selection
+
+            _, model_name, _ = resolve_llm_selection(
+                settings, provider=llm_provider, model=llm_model
+            )
+        except Exception:
+            model_name = llm_model
+
+    style_block = ""
+    style_pack_path_str: str | None = None
+    tavily_hits = 0
+    style_pack_cached = False
+    if style_mine:
+        from darsamooz.style_mine import (
+            format_style_pack_for_prompt,
+            load_style_pack,
+            mine_style_pack,
+            topic_from_titles,
+        )
+
+        def _log(msg: str) -> None:
+            if callable(on_log):
+                on_log(msg)
+
+        cached = load_style_pack(book_slug, chapter_num, settings)
+        if cached:
+            style_pack_cached = True
+            _log("بسته سبک وب از کش بارگذاری شد.")
+            pack = cached
+            from darsamooz.style_mine import style_pack_path as _spp
+
+            style_pack_path_str = str(_spp(book_slug, chapter_num, settings))
+            tavily_hits = int(pack.get("search_hits") or pack.get("tavily_hits") or 0)
+        else:
+            _log("الگوبرداری وب با API مدل…")
+            topic = topic_from_titles(title, book_slug)
+            pack, pack_path, tavily_hits = mine_style_pack(
+                topic,
+                book_slug=book_slug,
+                chapter=chapter_num,
+                chapter_title=title,
+                provider=provider,
+                settings=settings,
+                force_refresh=True,
+            )
+            style_pack_path_str = str(pack_path)
+            backend = pack.get("search_backend") or "llm"
+            _log(
+                f"بسته سبک آماده شد (backend={backend}"
+                + (f"، sources≈{tavily_hits}" if tavily_hits else "")
+                + ")."
+            )
+        style_block = format_style_pack_for_prompt(pack)
+
     run = RunWriter.create(
         chapter_num,
         settings=settings,
@@ -200,19 +315,28 @@ def generate_from_chapter_with_run(
             "book_slug": book_slug,
             "count": count,
             "sample": False,
-            "provider": settings.provider_name,
+            "provider": primary_name,
             "model": model_name,
+            "provider_override": llm_provider,
+            "model_override": llm_model,
             "fallback_provider": settings.fallback_provider_name,
             "units_scheduled": len(schedule),
             "verify": verify,
             "difficulty_mix": (
                 {k.value: v for k, v in mix_norm.items()} if mix_norm else None
             ),
+            "pattern_mix": (
+                {k.value: v for k, v in pattern_norm.items()} if pattern_norm else None
+            ),
             "balance_answers": balance_answers,
+            "style_mine": bool(style_mine),
+            "style_pack_path": style_pack_path_str,
+            "tavily_hits": tavily_hits if style_mine else None,
+            "style_pack_cached": style_pack_cached if style_mine else None,
         },
     )
 
-    prefix = f"phys10-ch{chapter_num}"
+    prefix = export_prefix_for(book_slug, chapter_num)
     questions: list[Question] = []
     accepted_stems: list[str] = []
     last_error: Exception | None = None
@@ -234,13 +358,22 @@ def generate_from_chapter_with_run(
         batch = min(batch, count - len(questions))
         rounds += 1
         run.record_unit(sec.id, sec.title, len(sec.text))
-        # Use next target difficulty for this batch (first slot)
+        # Use next target difficulty/pattern for this batch (first slot)
         target = next(target_iter, None) if batch else None
-        # If we already consumed targets for accepted qs, peek remaining plan
         if target is None and mix_norm and len(questions) < len(targets):
             target = targets[len(questions)]
+        ptarget = next(pattern_iter, None) if batch else None
+        if ptarget is None and pattern_norm and len(questions) < len(pattern_targets):
+            ptarget = pattern_targets[len(questions)]
         user = _build_unit_prompt(
-            chapter_num, title, sec, batch, target_difficulty=target
+            chapter_num,
+            title,
+            sec,
+            batch,
+            target_difficulty=target,
+            target_pattern=ptarget,
+            style_block=style_block,
+            book_label=book_slug,
         )
         try:
             data = provider.complete_json(SYSTEM_PROMPT, user)
@@ -287,6 +420,9 @@ def generate_from_chapter_with_run(
             raw = {**raw, "section_id": sec.id, "section": raw.get("section") or sec.title}
             if target is not None and not raw.get("difficulty"):
                 raw["difficulty"] = target.value
+            if ptarget is not None and not raw.get("pattern"):
+                raw["pattern"] = ptarget.value
+            claimed_hard = str(raw.get("difficulty") or "").lower() == "hard"
             stem = str(raw.get("stem") or raw.get("question") or "")
             if any(_stems_too_similar(stem, prev) for prev in accepted_stems):
                 rejected += 1
@@ -340,7 +476,11 @@ def generate_from_chapter_with_run(
                 "id": q.id,
                 "section_id": sec.id,
                 "stem": q.stem[:160],
+                "difficulty": q.difficulty.value,
+                "pattern": q.pattern.value,
             }
+            if claimed_hard and q.difficulty != Difficulty.hard:
+                acc_item["hard_downgraded"] = True
             acc_item.update(llm_fields)
             run.append_item(acc_item)
             if len(questions) >= count:
@@ -367,6 +507,7 @@ def generate_from_chapter_with_run(
             section_text_by_id=text_map,
             provider=provider,
             settings=settings,
+            provider_override=llm_provider,
         )
         for q in questions:
             run.append_item(
@@ -395,6 +536,16 @@ def generate_from_chapter_with_run(
         "difficulty_mix_target": (
             {k.value: v for k, v in mix_norm.items()} if mix_norm else None
         ),
+        "pattern_mix_target": (
+            {k.value: v for k, v in pattern_norm.items()} if pattern_norm else None
+        ),
+        "style_mine": bool(style_mine),
+        "style_pack_path": style_pack_path_str,
+        "tavily_hits": tavily_hits if style_mine else None,
+        "style_pack_cached": style_pack_cached if style_mine else None,
+        "hard_downgraded_count": sum(
+            1 for q in questions if "hard_downgraded" in (q.tags or [])
+        ),
         **dist,
         **verify_metrics,
         # Flat visibility fields for UI/job status (also nested under llm)
@@ -418,7 +569,7 @@ def generate_from_chapter_with_run(
         raise RuntimeError(
             f"Only generated {len(questions)}/{count} valid book-grounded questions "
             f"for chapter {chapter_num} after {rounds} rounds "
-            f"(early_stop={early_stop}, provider={settings.provider_name}, "
+            f"(early_stop={early_stop}, provider={primary_name}, "
             f"model={model_name}, run_id={run.run_id})."
             f"{detail}"
         )

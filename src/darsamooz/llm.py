@@ -311,21 +311,47 @@ def provider_call_summary(provider: LLMProvider, *, settings: Settings | None = 
 def get_provider(
     settings: Settings | None = None,
     *,
+    provider_override: str | None = None,
     model_override: str | None = None,
 ) -> LLMProvider:
+    """
+    Build the LLM client for one run.
+
+    ``provider_override`` / ``model_override`` select primary for this call only
+    (CLI flags / web UI). Fallback still comes from LLM_FALLBACK_PROVIDER when
+    set and different from the chosen primary. Model override applies to primary;
+    fallback keeps its own env model unless the same override is intentional —
+    we only override primary so switching OpenRouter→Gemini with a Gemini model
+    id does not break the fallback chain.
+    """
+    from darsamooz.config import normalize_provider_id
+
     settings = settings or get_settings()
+    primary_name = normalize_provider_id(provider_override) or settings.provider_name
     primary_view = ProviderSettingsView(
-        settings, settings.provider_name, model_override=model_override
+        settings, primary_name, model_override=model_override
     )
+    if not primary_view.api_key:
+        raise RuntimeError(
+            f"No API key configured for provider {primary_name!r}. "
+            "Set the matching *_API_KEY in .env."
+        )
+    try:
+        _ = primary_view.model
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Model missing for provider {primary_name!r}: {exc}. "
+            "Pass --model / UI model, or set the matching *_MODEL in .env."
+        ) from exc
+
     primary = OpenAICompatibleProvider(primary_view, model_override=model_override)
 
     fb_name = settings.fallback_provider_name
-    if not fb_name:
+    if not fb_name or fb_name == primary_name:
         return primary
 
-    # Require a configured key for the fallback provider; otherwise raise clearly
-    # rather than silently skipping the configured fallback.
-    fb_view = ProviderSettingsView(settings, fb_name, model_override=model_override)
+    # Fallback uses its own env model (not the primary model override).
+    fb_view = ProviderSettingsView(settings, fb_name, model_override=None)
     if not fb_view.api_key:
         raise RuntimeError(
             f"LLM_FALLBACK_PROVIDER={fb_name!r} is set but no API key is configured "
@@ -338,12 +364,12 @@ def get_provider(
             f"LLM_FALLBACK_PROVIDER={fb_name!r} is set but its model env is missing: {exc}"
         ) from exc
 
-    fallback = OpenAICompatibleProvider(fb_view, model_override=model_override)
+    fallback = OpenAICompatibleProvider(fb_view, model_override=None)
     return FallbackLLMProvider(
         primary,
         fallback,
-        primary_name=settings.provider_name,
+        primary_name=primary_name,
         primary_model=primary.model_label,
         fallback_name=fb_name,
-        fallback_model=fb_model if not model_override else model_override,
+        fallback_model=fb_model,
     )
