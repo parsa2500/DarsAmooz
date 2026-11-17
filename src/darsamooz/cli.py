@@ -133,6 +133,18 @@ def ingest_cmd(pdf: Path, slug: str) -> None:
     default=None,
     help="Override model id for this run (must match the chosen provider)",
 )
+@click.option(
+    "--slug",
+    "book_slug",
+    default="physics10-riazi-110209",
+    show_default=True,
+    help="Source slug (built-in book or an uploaded doc-… slug)",
+)
+@click.option(
+    "--pattern-pack",
+    default=None,
+    help="Use a web pattern pack: 'auto' = stored pack for --slug/--chapter, or a path to pattern_pack.json",
+)
 def generate_cmd(
     chapter: int,
     count: int,
@@ -146,12 +158,15 @@ def generate_cmd(
     export_profile: str | None,
     llm_provider: str | None,
     llm_model: str | None,
+    book_slug: str,
+    pattern_pack: str | None,
 ) -> None:
     """Generate multiple-choice questions for a chapter."""
+    from darsamooz.ingest import export_prefix_for
     from darsamooz.config import resolve_llm_selection
 
     settings = get_settings()
-    prefix = out_prefix or f"phys10-ch{chapter}"
+    prefix = out_prefix or export_prefix_for(book_slug, chapter)
 
     if sample:
         if chapter != 1:
@@ -200,6 +215,9 @@ def generate_cmd(
                 balance_answers=balance_answers,
                 llm_provider=llm_provider,
                 llm_model=llm_model,
+                book_slug=book_slug,
+                pattern_pack=pattern_pack,
+                on_log=lambda m: click.echo(f"  {m}"),
             )
         except (RuntimeError, FileNotFoundError, ValueError) as exc:
             raise click.ClickException(str(exc)) from exc
@@ -218,6 +236,15 @@ def generate_cmd(
             f"difficulties={metrics.get('difficulties')} "
             f"needs_review={metrics.get('needs_review')}"
         )
+        if metrics.get("pattern_pack_used"):
+            click.echo(
+                "pattern_pack: "
+                f"status={metrics.get('pattern_pack_status')} "
+                f"patterns={metrics.get('patterns_count')} "
+                f"web_sources={metrics.get('web_sources_count')} "
+                f"usage={metrics.get('pattern_usage')} "
+                f"web_dup_rejected={metrics.get('web_dup_rejected')}"
+            )
         paths = persist_generation(
             result, prefix=prefix, settings=settings, approved_only=approved_only
         )
@@ -482,6 +509,134 @@ def db_sync_cmd(slug: str, db: Path | None) -> None:
     click.echo(
         f"Synced sections={stats['sections']} runs={stats['runs']} db={stats['db']}"
     )
+
+
+def _cli_provider(llm_provider: str | None, llm_model: str | None):
+    from darsamooz.llm import get_provider
+
+    try:
+        return get_provider(
+            get_settings(), provider_override=llm_provider, model_override=llm_model
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@main.command("ingest-doc")
+@click.option("--pdf", type=click.Path(path_type=Path, exists=True), required=True)
+@click.option("--title", default=None, help="Display title (default: file name)")
+def ingest_doc_cmd(pdf: Path, title: str | None) -> None:
+    """Ingest any handout/جزوه PDF as a new source (same as UI upload)."""
+    import shutil
+
+    from darsamooz.ingest import ingest_document_pdf, make_document_slug
+
+    settings = get_settings()
+    slug = make_document_slug(pdf.name)
+    settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+    dest = settings.uploads_dir / f"{slug}.pdf"
+    if pdf.resolve() != dest.resolve():
+        shutil.copy2(pdf, dest)
+    chapters, counts = ingest_document_pdf(dest, slug, title=title or pdf.stem, settings=settings)
+    click.echo(f"slug: {slug}")
+    for ch in chapters:
+        click.echo(f"فصل {ch.number}: {ch.title} — sections={counts.get(ch.number, 0)}")
+
+
+@main.command("analyze-topic")
+@click.option("--slug", "book_slug", default="physics10-riazi-110209", show_default=True)
+@click.option("--chapter", type=int, required=True)
+@click.option("--provider", "llm_provider", default=None)
+@click.option("--model", "llm_model", default=None)
+def analyze_topic_cmd(book_slug: str, chapter: int, llm_provider: str | None, llm_model: str | None) -> None:
+    """Step 1: detect the handout's exact topic (subject/grade/track/chapter/concepts)."""
+    from darsamooz.topic import analyze_topic, topic_profile_path
+
+    settings = get_settings()
+    provider = _cli_provider(llm_provider, llm_model)
+    try:
+        profile = analyze_topic(book_slug, chapter, provider=provider, settings=settings)
+    except (RuntimeError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(profile, ensure_ascii=False, indent=2))
+    click.echo(f"saved: {topic_profile_path(book_slug, chapter, settings)}")
+    click.echo("Edit the JSON file if needed, then run mine-web-patterns.")
+
+
+@main.command("mine-web-patterns")
+@click.option("--slug", "book_slug", default="physics10-riazi-110209", show_default=True)
+@click.option("--chapter", type=int, required=True)
+@click.option(
+    "--backend",
+    type=click.Choice(["auto", "gemini", "duckduckgo"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+)
+@click.option("--max-sources", type=int, default=8, show_default=True)
+@click.option("--no-fetch", is_flag=True, help="Do not open result pages (search snippets only)")
+@click.option(
+    "--llm-only",
+    is_flag=True,
+    help="Skip web search; build patterns from the LLM only (pack is marked llm_only, 0 sources)",
+)
+@click.option("--provider", "llm_provider", default=None)
+@click.option("--model", "llm_model", default=None)
+def mine_web_patterns_cmd(
+    book_slug: str,
+    chapter: int,
+    backend: str,
+    max_sources: int,
+    no_fetch: bool,
+    llm_only: bool,
+    llm_provider: str | None,
+    llm_model: str | None,
+) -> None:
+    """Steps 2–3: search the web for real tests on the topic and extract a pattern pack."""
+    from darsamooz.patterns import mine_web_patterns, pattern_pack_path, web_sources_path
+    from darsamooz.topic import analyze_topic, load_topic_profile
+    from darsamooz.web_search import WebSearchError
+
+    settings = get_settings()
+    provider = _cli_provider(llm_provider, llm_model)
+    try:
+        profile = load_topic_profile(book_slug, chapter, settings)
+        if not profile:
+            click.echo("No topic profile yet — running analyze-topic first…")
+            profile = analyze_topic(book_slug, chapter, provider=provider, settings=settings)
+    except (RuntimeError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    try:
+        pack = mine_web_patterns(
+            book_slug,
+            chapter,
+            provider=provider,
+            settings=settings,
+            profile=profile,
+            backend=backend.lower(),
+            max_sources=max_sources,
+            llm_only=llm_only,
+            fetch_pages=not no_fetch,
+            on_log=lambda m: click.echo(f"  {m}"),
+        )
+    except WebSearchError as exc:
+        raise click.ClickException(
+            f"Web search failed: {exc}\n"
+            "No sources were invented. Re-run later, try --backend duckduckgo, "
+            "or continue with --llm-only (LLM-only patterns, clearly marked)."
+        ) from exc
+    except (RuntimeError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"status={pack['status']} backend={pack.get('search_backend')} "
+        f"sources={pack.get('sources_count')} excerpts={pack.get('web_excerpt_count')} "
+        f"patterns={len(pack.get('patterns') or [])}"
+    )
+    for s in (pack.get("sources") or [])[:8]:
+        click.echo(f"  source: {s.get('url')}")
+    for p in pack.get("patterns") or []:
+        click.echo(f"  {p['id']} [{p['question_type']}/{p['difficulty']}] {p['name_fa']}")
+    click.echo(f"pack: {pattern_pack_path(book_slug, chapter, settings)}")
+    click.echo(f"sources: {web_sources_path(book_slug, chapter, settings)}")
 
 
 if __name__ == "__main__":

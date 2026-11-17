@@ -28,7 +28,7 @@ from darsamooz.sections import load_sections
 from darsamooz.validate import validate_batch, validate_question_dict
 from darsamooz.verify import sections_to_text_map, verify_questions
 
-SYSTEM_PROMPT = """You write Iranian grade-10 physics MCQs (تست چهارگزینه‌ای) ONLY from the given unit text.
+SYSTEM_PROMPT = """You write Iranian school MCQs (تست چهارگزینه‌ای; default context grade-10 physics) ONLY from the given unit text.
 Return ONLY JSON:
 {"questions":[{"stem":"...","options":["a","b","c","d"],"correct_index":0,"explanation":"...","difficulty":"easy|medium|hard","pattern":"tarifi|mafhumi|halli|tarkibi","section":"...","source_refs":["verbatim quote from unit"]}]}
 Rules:
@@ -37,7 +37,7 @@ Rules:
 - difficulty MUST follow the rubric in the user message (hard ≠ restating a definition)
 - pattern MUST match: tarifi=تعریفی, mafhumi=مفهومی, halli=حلی/numeric, tarkibi=ترکیبی
 - halli items MUST include numbers/calculation grounded in the unit
-- if a web style-pack block is present, use it ONLY for stem/option structure and trap style — never copy web facts or stems; all truth stays in the unit text
+- if a web style-pack / pattern block is present, use it ONLY for stem/option structure and trap style — never copy or paraphrase web questions, facts or numbers; all truth stays in the unit text
 """
 
 
@@ -154,6 +154,7 @@ def generate_from_chapter(
     llm_provider: str | None = None,
     llm_model: str | None = None,
     style_mine: bool = False,
+    pattern_pack: Any = None,
 ) -> list[Question]:
     return generate_from_chapter_with_run(
         chapter_num,
@@ -168,6 +169,7 @@ def generate_from_chapter(
         llm_provider=llm_provider,
         llm_model=llm_model,
         style_mine=style_mine,
+        pattern_pack=pattern_pack,
     ).questions
 
 
@@ -203,6 +205,7 @@ def generate_from_chapter_with_run(
     llm_model: str | None = None,
     style_mine: bool = False,
     on_log: Any | None = None,
+    pattern_pack: Any = None,
 ) -> GenerationResult:
     settings = settings or get_settings()
     sections = load_sections(book_slug, chapter_num, settings)
@@ -308,6 +311,27 @@ def generate_from_chapter_with_run(
             )
         style_block = format_style_pack_for_prompt(pack)
 
+    pp_pack, pp_sources, pp_path = _resolve_pattern_pack(
+        pattern_pack, book_slug, chapter_num, settings
+    )
+    pp_patterns: list[dict[str, Any]] = []
+    web_texts: list[str] = []
+    if pp_pack is not None:
+        from darsamooz.patterns import active_patterns, web_question_texts
+
+        pp_patterns = active_patterns(pp_pack)
+        if not pp_patterns:
+            raise RuntimeError("بسته الگو هیچ الگوی فعالی ندارد.")
+        web_texts = web_question_texts(pp_sources)
+        if callable(on_log):
+            on_log(
+                f"بسته الگو: {len(pp_patterns)} الگو، "
+                f"{pp_pack.get('sources_count', 0)} منبع وب (status={pp_pack.get('status')})."
+            )
+        if style_block:
+            # Pattern pack supersedes the older style pack; avoid conflicting blocks.
+            style_block = ""
+
     run = RunWriter.create(
         chapter_num,
         settings=settings,
@@ -333,8 +357,12 @@ def generate_from_chapter_with_run(
             "style_pack_path": style_pack_path_str,
             "tavily_hits": tavily_hits if style_mine else None,
             "style_pack_cached": style_pack_cached if style_mine else None,
+            "pattern_pack_path": pp_path,
+            "pattern_pack_status": (pp_pack or {}).get("status"),
         },
     )
+    if pp_pack is not None:
+        _copy_pattern_artifacts(run.root, pp_pack, pp_sources, book_slug, chapter_num, settings)
 
     prefix = export_prefix_for(book_slug, chapter_num)
     questions: list[Question] = []
@@ -348,6 +376,8 @@ def generate_from_chapter_with_run(
     tokens_known = False
     early_stop = False
     section_for_qid: dict[str, str] = {}
+    web_dup_rejected = 0
+    pattern_use: dict[str, int] = {}
 
     max_rounds = max(len(schedule) * 2, count * 2)
 
@@ -365,6 +395,18 @@ def generate_from_chapter_with_run(
         ptarget = next(pattern_iter, None) if batch else None
         if ptarget is None and pattern_norm and len(questions) < len(pattern_targets):
             ptarget = pattern_targets[len(questions)]
+        round_block = style_block
+        web_pat: dict[str, Any] | None = None
+        if pp_patterns:
+            from darsamooz.patterns import format_pattern_for_prompt
+
+            web_pat = pp_patterns[(rounds - 1) % len(pp_patterns)]
+            round_block = format_pattern_for_prompt(pp_pack, web_pat)
+            if pattern_norm is None:
+                try:
+                    ptarget = QuestionPattern(web_pat.get("question_type") or "mafhumi")
+                except ValueError:
+                    pass
         user = _build_unit_prompt(
             chapter_num,
             title,
@@ -372,7 +414,7 @@ def generate_from_chapter_with_run(
             batch,
             target_difficulty=target,
             target_pattern=ptarget,
-            style_block=style_block,
+            style_block=round_block,
             book_label=book_slug,
         )
         try:
@@ -435,6 +477,24 @@ def generate_from_chapter_with_run(
                     }
                 )
                 continue
+            if web_texts:
+                from darsamooz.patterns import is_web_near_duplicate
+
+                dup, dup_score, dup_match = is_web_near_duplicate(stem, web_texts)
+                if dup:
+                    rejected += 1
+                    web_dup_rejected += 1
+                    run.append_item(
+                        {
+                            "status": "rejected",
+                            "reason": "web_near_duplicate",
+                            "section_id": sec.id,
+                            "stem": stem[:120],
+                            "web_similarity": round(dup_score, 3),
+                            "web_match": (dup_match or "")[:160],
+                        }
+                    )
+                    continue
             try:
                 qid = raw.get("id") or f"{prefix}-q{len(questions)+1:03d}"
                 q = validate_question_dict(
@@ -467,6 +527,9 @@ def generate_from_chapter_with_run(
                     }
                 )
                 continue
+            if web_pat is not None:
+                q.tags = [*(q.tags or []), f"web_pattern:{web_pat.get('id')}"]
+                pattern_use[str(web_pat.get("id"))] = pattern_use.get(str(web_pat.get("id")), 0) + 1
             questions.append(q)
             accepted_stems.append(q.stem)
             section_for_qid[q.id] = sec.id
@@ -481,6 +544,8 @@ def generate_from_chapter_with_run(
             }
             if claimed_hard and q.difficulty != Difficulty.hard:
                 acc_item["hard_downgraded"] = True
+            if web_pat is not None:
+                acc_item["web_pattern_id"] = web_pat.get("id")
             acc_item.update(llm_fields)
             run.append_item(acc_item)
             if len(questions) >= count:
@@ -543,6 +608,24 @@ def generate_from_chapter_with_run(
         "style_pack_path": style_pack_path_str,
         "tavily_hits": tavily_hits if style_mine else None,
         "style_pack_cached": style_pack_cached if style_mine else None,
+        "pattern_pack_used": pp_pack is not None,
+        "pattern_pack_status": (pp_pack or {}).get("status"),
+        "pattern_pack_path": pp_path,
+        "patterns_count": len(pp_patterns) if pp_pack is not None else None,
+        "pattern_usage": pattern_use if pp_pack is not None else None,
+        "web_sources_count": (pp_pack or {}).get("sources_count") if pp_pack is not None else None,
+        "search_backend": (pp_pack or {}).get("search_backend") if pp_pack is not None else None,
+        "search_error": (
+            "; ".join(
+                f"{a.get('backend')}: {a.get('error')}"
+                for a in (pp_pack or {}).get("search_attempts") or []
+                if not a.get("ok")
+            )
+            or None
+        )
+        if pp_pack is not None
+        else None,
+        "web_dup_rejected": web_dup_rejected if pp_pack is not None else None,
         "hard_downgraded_count": sum(
             1 for q in questions if "hard_downgraded" in (q.tags or [])
         ),
@@ -579,6 +662,76 @@ def generate_from_chapter_with_run(
         run=run,
         metrics=metrics,
     )
+
+
+
+def _resolve_pattern_pack(
+    pattern_pack: Any,
+    book_slug: str,
+    chapter_num: int,
+    settings: Settings,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    """Accept None/False, True/"auto" (stored pack for slug+chapter), a path, or a dict."""
+    if pattern_pack is None or pattern_pack is False or pattern_pack == "":
+        return None, None, None
+    from darsamooz.patterns import (
+        load_pattern_pack,
+        load_web_sources,
+        pattern_pack_path,
+    )
+
+    if pattern_pack is True or (isinstance(pattern_pack, str) and pattern_pack.lower() == "auto"):
+        pack = load_pattern_pack(book_slug, chapter_num, settings)
+        if not pack:
+            raise FileNotFoundError(
+                f"بسته الگو برای {book_slug} فصل {chapter_num} وجود ندارد. "
+                "اول mine-web-patterns (یا دکمه جستجوی وب در UI) را اجرا کنید."
+            )
+        return (
+            pack,
+            load_web_sources(book_slug, chapter_num, settings),
+            str(pattern_pack_path(book_slug, chapter_num, settings)),
+        )
+    if isinstance(pattern_pack, dict):
+        return pattern_pack, load_web_sources(book_slug, chapter_num, settings), None
+    path = Path(str(pattern_pack))
+    if not path.is_file():
+        raise FileNotFoundError(f"فایل بسته الگو پیدا نشد: {path}")
+    pack = json.loads(path.read_text(encoding="utf-8"))
+    sources_file = path.with_name("web_sources.json")
+    sources = (
+        json.loads(sources_file.read_text(encoding="utf-8"))
+        if sources_file.is_file()
+        else load_web_sources(
+            pack.get("book_slug") or book_slug,
+            int(pack.get("chapter_num") or chapter_num),
+            settings,
+        )
+    )
+    return pack, sources, str(path)
+
+
+def _copy_pattern_artifacts(
+    run_root: Path,
+    pack: dict[str, Any],
+    web_sources: dict[str, Any] | None,
+    book_slug: str,
+    chapter_num: int,
+    settings: Settings,
+) -> None:
+    """Traceability: keep the exact pack, web sources and topic profile in the run folder."""
+    from darsamooz.topic import load_topic_profile
+
+    def _w(name: str, obj: Any) -> None:
+        if obj is None:
+            return
+        (run_root / name).write_text(
+            json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    _w("pattern_pack.json", pack)
+    _w("web_sources.json", web_sources)
+    _w("topic_profile.json", load_topic_profile(book_slug, chapter_num, settings))
 
 
 def persist_generation(
