@@ -89,6 +89,23 @@ darsamooz db-sync
   darsamooz generate --chapter 1 --count 10 --verify --difficulty-mix easy=30,medium=50,hard=20 --pattern-mix tarifi=20,mafhumi=40,halli=30,tarkibi=10 --export-profile generic
   ```
 
+### جریان جزوه ← الگوی تست ← تولید (جدید)
+وقتی یک جزوه/PDF آپلود می‌شود:
+1. **تشخیص موضوع:** مدل متن را می‌خواند و درس، پایه، رشته، فصل/مبحث، مفاهیم کلیدی و عبارت‌های جستجو را برمی‌گرداند. در UI قابل ویرایش و تأیید است (`data/extracted/<slug>/chN/topic_profile.json`).
+2. **جستجوی واقعی در وب:** تست‌های واقعی همان مبحث (کنکور، نهایی، آزمون‌های آزمایشی، سایت‌های بانک تست) جستجو می‌شود و صفحه‌ها خوانده می‌شوند تا نمونه تست‌ها استخراج شوند. آدرس منابع و تکه‌های کوتاه در `web_sources.json` ذخیره می‌شود و در پوشه هر اجرا هم کپی می‌شود.
+   - روش‌ها (بدون هزینه اضافه): `gemini` = Gemini API با `google_search` grounding (همان `GEMINI_API_KEY`؛ آدرس‌ها از groundingMetadata، نه متن مدل) و `duckduckgo` = صفحه HTML داک‌داک‌گو بدون کلید. حالت `auto` اول Gemini و بعد DuckDuckGo را امتحان می‌کند و هر تلاش ثبت می‌شود.
+   - اگر جستجو هیچ منبعی پیدا نکند، خطا در UI/CLI نشان داده می‌شود و هیچ منبع ساختگی ثبت نمی‌شود. کاربر می‌تواند «ادامه بدون وب» را انتخاب کند؛ آن بسته با `status=llm_only` و صفر منبع علامت می‌خورد.
+3. **استخراج الگو:** مدل از روی نمونه‌ها فقط *الگو* درمی‌آورد: اسکلت صورت سؤال، نوع (تعریفی/مفهومی/حلی/ترکیبی)، عددی یا مفهومی، سختی، شکل گزینه‌ها، روش ساخت گزینه‌های غلط و دام‌ها (`pattern_pack.json`، قابل ویرایش/غیرفعال‌سازی در UI).
+4. **تولید:** هر دور یک الگو را هدف می‌گیرد و محتوا فقط از متن جزوه می‌آید (نقل‌قول منبع همچنان چک می‌شود). هر صورت سؤال با تست‌های خوانده‌شده از وب مقایسه می‌شود و اگر بیش از ۶۰٪ شبیه باشد با دلیل `web_near_duplicate` رد می‌شود. بازبینی، تأیید دوم، پخش جواب‌ها و خروجی مثل قبل است.
+
+```bash
+darsamooz ingest-doc --pdf jozve.pdf                 # یا آپلود در UI
+darsamooz analyze-topic --slug <slug> --chapter 1     # مرحله ۱
+darsamooz mine-web-patterns --slug <slug> --chapter 1 [--backend auto|gemini|duckduckgo] [--llm-only]
+darsamooz generate --slug <slug> --chapter 1 --count 10 --pattern-pack auto --difficulty-mix easy=30,medium=50,hard=20
+```
+در `metrics.json` فیلدهای `pattern_pack_status`، `web_sources_count`، `patterns_count`، `pattern_usage`، `search_backend`، `search_error` و `web_dup_rejected` ثبت می‌شود.
+
 ### نکته حقوقی
 PDF کتاب درسی مشمول حق‌تألیف سازمان پژوهش و برنامه‌ریزی آموزشی است و **داخل ریپو commit نمی‌شود**. فقط اسکریپت دانلود و manifest نگه داشته می‌شود.
 
@@ -124,6 +141,19 @@ darsamooz to-md path/to/questions.json --out path/to/questions.md
   darsamooz profiles
   darsamooz export-client path/to/questions.json --profile generic --out path/to/mapped.json --approved-only
   ```
+
+### Handout → test patterns → generation (new)
+When a handout/PDF is uploaded:
+1. **Topic detection** — the LLM reads the text and returns subject, grade, track, chapter/topic, key concepts and search queries. Editable/confirmable in the UI (`data/extracted/<slug>/chN/topic_profile.json`).
+2. **Real web search** for real exam tests on that topic (Konkur, final exams, mock exams, Persian test-bank sites). Result pages are fetched and question excerpts extracted. URLs + short snippets go to `web_sources.json` (also copied into each run folder).
+   - Backends (no extra cost): `gemini` = Gemini API `google_search` grounding (same `GEMINI_API_KEY`; URLs from groundingMetadata, never from model text) and `duckduckgo` = keyless DuckDuckGo HTML. `auto` tries Gemini then DuckDuckGo and records every attempt. OpenRouter web search is not used by default because it is billed per result.
+   - If no source is found the failure is shown in UI/CLI/metrics and nothing is invented. The user may choose "continue without web"; that pack is marked `status=llm_only` with zero sources.
+3. **Pattern extraction** — the LLM turns the excerpts into structure-only patterns: stem skeleton, type (tarifi/mafhumi/halli/tarkibi), numeric vs conceptual, difficulty, option format, distractor strategies, traps (`pattern_pack.json`, editable / per-pattern enable in the UI).
+4. **Generation** — each round targets one pattern; facts come only from the handout (source-quote grounding still enforced). Every stem is compared against fetched web questions (5-char shingle containment ≥ 0.6 → rejected as `web_near_duplicate`). Review/verify/balance/export unchanged.
+
+CLI: `ingest-doc`, `analyze-topic`, `mine-web-patterns [--backend] [--llm-only] [--no-fetch]`, `generate --slug … --pattern-pack auto|PATH`.
+Metrics: `pattern_pack_status`, `web_sources_count`, `patterns_count`, `pattern_usage`, `search_backend`, `search_error`, `web_dup_rejected`.
+Optional env: `GEMINI_SEARCH_MODEL` (model used only for grounded search; defaults to `GEMINI_MODEL`).
 
 ### Config
 See `.env.example`. Default provider is **openrouter**. Select with `LLM_PROVIDER=openrouter` | `gemini` | `openai`.
