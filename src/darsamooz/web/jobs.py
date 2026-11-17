@@ -42,6 +42,7 @@ class Job:
     export_profile: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    use_pattern_pack: bool = False
     status: JobStatus = JobStatus.queued
     logs: list[str] = field(default_factory=list)
     error: str | None = None
@@ -74,6 +75,7 @@ class Job:
             "export_profile": self.export_profile,
             "llm_provider": self.llm_provider,
             "llm_model": self.llm_model,
+            "use_pattern_pack": self.use_pattern_pack,
             "status": self.status.value,
             "logs": list(self.logs),
             "error": self.error,
@@ -119,6 +121,7 @@ class JobManager:
         export_profile: str | None = None,
         llm_provider: str | None = None,
         llm_model: str | None = None,
+        use_pattern_pack: bool = False,
     ) -> Job:
         with self._lock:
             active = self.active()
@@ -138,6 +141,7 @@ class JobManager:
                 export_profile=export_profile,
                 llm_provider=llm_provider,
                 llm_model=llm_model,
+                use_pattern_pack=bool(use_pattern_pack),
             )
             self._jobs[job.id] = job
             self._active_id = job.id
@@ -235,6 +239,8 @@ class JobManager:
                     fb = None
                 fb_bit = f"، fallback={fb}" if fb else ""
                 style_bit = "، style_mine=on" if job.style_mine else ""
+                if job.use_pattern_pack:
+                    style_bit += "، بسته الگوی وب=on"
                 job.log(
                     f"تولید با {provider_id} / {model_id}{fb_bit} — "
                     f"{job.book_slug} فصل {job.chapter}، تعداد {job.count}، "
@@ -257,6 +263,7 @@ class JobManager:
                     llm_model=job.llm_model,
                     style_mine=job.style_mine,
                     on_log=job.log,
+                    pattern_pack=True if job.use_pattern_pack else None,
                 )
                 if job._cancel.is_set():
                     job.status = JobStatus.cancelled

@@ -874,3 +874,30 @@ body {
     transition: none !important;
   }
 }
+
+/* ---- handout → patterns → generate flow ---- */
+.handout-panel { margin-top: 1rem; }
+.handout-panel .step { border-top: 1px solid var(--rule, #d5dbe1); padding: 0.8rem 0; }
+.step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.step-head h3 { margin: 0; font-size: 1rem; }
+.step-head select { font: inherit; padding: 0.25rem 0.4rem; }
+.badge { display: inline-block; font-size: 0.78rem; padding: 0.1rem 0.5rem; border: 1px solid #c6ced6; border-radius: 2px; background: #f4f6f8; }
+.badge.ok { border-color: #0f766e; color: #0f766e; background: #ecfdf8; }
+.badge.warn { border-color: #b45309; color: #b45309; background: #fff7ed; }
+.badge.err { border-color: #b91c1c; color: #b91c1c; background: #fef2f2; }
+.topic-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem 0.8rem; margin-top: 0.6rem; }
+.topic-grid .wide { grid-column: 1 / -1; }
+.topic-grid textarea, .pattern-card textarea, .pack-json { width: 100%; font: inherit; box-sizing: border-box; }
+.step-actions { display: flex; gap: 0.5rem; }
+.web-error { margin-top: 0.6rem; padding: 0.6rem 0.8rem; border: 1px solid #b91c1c; background: #fef2f2; }
+.web-sources { margin: 0.6rem 0 0; padding-inline-start: 1.2rem; }
+.web-sources li { margin-bottom: 0.5rem; }
+.web-sources .src-host { margin-inline-start: 0.5rem; font-size: 0.78rem; color: #64748b; }
+.web-sources .src-snippet { margin: 0.2rem 0; font-size: 0.85rem; color: #475569; }
+.web-sources details ul { font-size: 0.82rem; color: #334155; }
+.pattern-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0.6rem; margin-top: 0.6rem; }
+.pattern-card { border: 1px solid #d5dbe1; padding: 0.6rem 0.7rem; background: #fbfcfd; }
+.pattern-card header { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin-bottom: 0.4rem; }
+.pattern-card p { margin: 0.25rem 0; font-size: 0.86rem; }
+.pack-json { margin-top: 0.6rem; font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; }
+@media (max-width: 800px) { .topic-grid { grid-template-columns: 1fr 1fr; } }

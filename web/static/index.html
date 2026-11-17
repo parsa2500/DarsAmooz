@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=operate3" />
+  <link rel="stylesheet" href="/static/styles.css?v=handout1" />
 </head>
 <body>
   <!--
@@ -95,6 +95,10 @@
                 <input id="balance" name="balance" type="checkbox" checked />
                 <span>پخش یکنواخت الف–د</span>
               </label>
+              <label class="check compact">
+                <input id="use-pattern-pack" name="use_pattern_pack" type="checkbox" disabled />
+                <span>تولید با الگوهای وب <span class="hint-inline" id="use-pack-hint">(بسته الگو ندارد)</span></span>
+              </label>
             </div>
             <details class="advanced-block">
               <summary>تنظیمات پیشرفته</summary>
@@ -151,6 +155,71 @@
       </aside>
     </div>
 
+    <section class="panel handout-panel" id="handout-panel" aria-labelledby="handoutHeading">
+      <div class="preview-head">
+        <h2 id="handoutHeading">جزوه ← الگوی تست ← تولید</h2>
+        <p class="hint" id="handout-source-line">—</p>
+      </div>
+      <p class="lede">۱) موضوع دقیق جزوه تشخیص داده می‌شود ۲) تست‌های واقعی همین مبحث در اینترنت جستجو می‌شود ۳) الگوی تست‌ها استخراج می‌شود ۴) تست جدید فقط از متن جزوه و با همان الگوها ساخته می‌شود.</p>
+
+      <div class="step" id="step-topic">
+        <div class="step-head">
+          <h3>۱. موضوع جزوه</h3>
+          <span class="badge" id="topic-badge">تشخیص داده نشده</span>
+          <button type="button" class="btn btn-small" id="btn-analyze">تشخیص موضوع</button>
+        </div>
+        <div id="topic-form" class="topic-grid hidden">
+          <label class="field"><span>درس</span><input id="tp-subject" type="text" /></label>
+          <label class="field"><span>پایه</span><input id="tp-grade" type="text" /></label>
+          <label class="field"><span>رشته</span><input id="tp-track" type="text" /></label>
+          <label class="field"><span>کتاب</span><input id="tp-book" type="text" /></label>
+          <label class="field wide"><span>فصل / مبحث</span><input id="tp-chapter" type="text" /></label>
+          <label class="field wide"><span>مباحث (با ، جدا کنید)</span><input id="tp-topics" type="text" /></label>
+          <label class="field wide"><span>مفاهیم کلیدی (با ، جدا کنید)</span><input id="tp-concepts" type="text" /></label>
+          <label class="field wide"><span>آزمون‌های هدف (با ، جدا کنید)</span><input id="tp-exams" type="text" /></label>
+          <label class="field wide"><span>عبارت‌های جستجو (هر خط یکی)</span><textarea id="tp-queries" rows="3"></textarea></label>
+          <p class="hint wide" id="tp-summary"></p>
+          <div class="wide step-actions">
+            <button type="button" class="btn btn-small btn-primary" id="btn-topic-save">ذخیره و تأیید موضوع</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" id="step-web">
+        <div class="step-head">
+          <h3>۲. جستجوی تست‌های واقعی در وب</h3>
+          <span class="badge" id="web-badge">جستجو نشده</span>
+          <select id="web-backend" aria-label="روش جستجو">
+            <option value="auto">خودکار (Gemini ← DuckDuckGo)</option>
+            <option value="duckduckgo">DuckDuckGo (بدون کلید)</option>
+            <option value="gemini">Gemini google_search</option>
+          </select>
+          <button type="button" class="btn btn-small" id="btn-mine" disabled>جستجو و استخراج الگو</button>
+        </div>
+        <div id="web-error" class="web-error hidden" role="alert">
+          <p id="web-error-text"></p>
+          <p class="hint">هیچ منبعی ساختگی ثبت نشد. می‌توانید دوباره تلاش کنید یا بدون وب ادامه دهید (الگوها فقط از دانش مدل و با برچسب «بدون وب»).</p>
+          <button type="button" class="btn btn-small" id="btn-llm-only">ادامه بدون وب (فقط مدل)</button>
+        </div>
+        <ol id="web-sources" class="web-sources"></ol>
+      </div>
+
+      <div class="step" id="step-patterns">
+        <div class="step-head">
+          <h3>۳. الگوهای استخراج‌شده</h3>
+          <span class="badge" id="pack-badge">—</span>
+          <button type="button" class="btn btn-small" id="btn-pack-json" disabled>ویرایش JSON</button>
+          <button type="button" class="btn btn-small btn-primary" id="btn-pack-save" disabled>ذخیره الگوها</button>
+        </div>
+        <div id="pack-meta" class="hint"></div>
+        <div id="pattern-list" class="pattern-list"></div>
+        <textarea id="pack-json" class="pack-json hidden" rows="16" dir="ltr" spellcheck="false"></textarea>
+      </div>
+
+      <p class="hint">۴. برای تولید، در فرم بالا تیک «تولید با الگوهای وب» را بزنید، تعداد و ترکیب سختی را تنظیم کنید و «شروع تولید» را بزنید. بازبینی، تأیید دوم و پخش جواب‌ها مثل قبل است.</p>
+      <p class="hint" id="handout-status" role="status" aria-live="polite"></p>
+    </section>
+
     <section class="panel preview-panel" aria-labelledby="previewHeading">
       <div class="preview-head">
         <h2 id="previewHeading">بازبینی سؤالات</h2>
@@ -174,6 +243,7 @@
       <span>فقط روی همین رایانه</span>
     </footer>
   </div>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=handout1" defer></script>
+  <script src="/static/handout.js?v=handout1" defer></script>
 </body>
 </html>

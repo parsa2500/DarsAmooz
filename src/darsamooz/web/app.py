@@ -55,6 +55,35 @@ class GenerateBody(BaseModel):
     export_profile: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    use_pattern_pack: bool = False
+
+
+class TopicPatch(BaseModel):
+    subject: str | None = None
+    grade: str | None = None
+    track: str | None = None
+    book: str | None = None
+    chapter: str | None = None
+    summary_fa: str | None = None
+    topics: list[str] | None = None
+    key_concepts: list[str] | None = None
+    exam_targets: list[str] | None = None
+    search_queries: list[str] | None = None
+    confirm: bool = True
+
+
+class AnalyzeBody(BaseModel):
+    llm_provider: str | None = None
+    llm_model: str | None = None
+
+
+class MineBody(BaseModel):
+    backend: str = "auto"
+    max_sources: int = Field(8, ge=1, le=15)
+    llm_only: bool = False
+    fetch_pages: bool = True
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class ReviewBody(BaseModel):
@@ -245,6 +274,16 @@ def create_app() -> FastAPI:
                 400,
                 detail="برای الگوبرداری وب همان کلید LLM (OpenRouter/Gemini/OpenAI) لازم است.",
             )
+        if payload.use_pattern_pack:
+            if payload.sample:
+                raise HTTPException(400, detail="بسته الگو با حالت نمونه سازگار نیست.")
+            from darsamooz.patterns import load_pattern_pack
+
+            if not load_pattern_pack(book_slug, payload.chapter, settings):
+                raise HTTPException(
+                    400,
+                    detail="برای این منبع/فصل هنوز بسته الگو ساخته نشده (مرحله ۲ و ۳).",
+                )
         llm_provider = None
         llm_model = (payload.llm_model or "").strip() or None
         if payload.llm_provider:
@@ -266,10 +305,128 @@ def create_app() -> FastAPI:
                 export_profile=payload.export_profile,
                 llm_provider=llm_provider,
                 llm_model=llm_model,
+                use_pattern_pack=payload.use_pattern_pack,
             )
         except RuntimeError as exc:
             raise HTTPException(409, detail=str(exc)) from exc
         return job.to_dict()
+
+    # ------------------------------------------------------------ handout flow
+    def _check_source(slug: str, chapter: int, settings) -> None:
+        if not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", slug or ""):
+            raise HTTPException(400, detail="شناسه منبع نامعتبر.")
+        known = {int(c["number"]) for c in list_book_chapters(slug, settings)}
+        if chapter not in known:
+            raise HTTPException(404, detail=f"فصل {chapter} برای این منبع نیست.")
+
+    def _llm(provider: str | None, model: str | None, settings):
+        from darsamooz.llm import get_provider
+
+        try:
+            pid = normalize_provider_id(provider) if provider else None
+            return get_provider(
+                settings, provider_override=pid, model_override=(model or "").strip() or None
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+
+    @app.get("/api/handout/{slug}/{chapter}")
+    def handout_state(slug: str, chapter: int) -> dict:
+        from darsamooz.patterns import load_pattern_pack, load_web_sources
+        from darsamooz.topic import load_topic_profile
+
+        settings = _resolved_settings(root)
+        _check_source(slug, chapter, settings)
+        return {
+            "topic_profile": load_topic_profile(slug, chapter, settings),
+            "web_sources": load_web_sources(slug, chapter, settings),
+            "pattern_pack": load_pattern_pack(slug, chapter, settings),
+        }
+
+    @app.post("/api/handout/{slug}/{chapter}/analyze")
+    def handout_analyze(slug: str, chapter: int, payload: Annotated[AnalyzeBody, Body()] = AnalyzeBody()) -> dict:
+        from darsamooz.topic import analyze_topic
+
+        settings = _resolved_settings(root)
+        _check_source(slug, chapter, settings)
+        provider = _llm(payload.llm_provider, payload.llm_model, settings)
+        try:
+            profile = analyze_topic(slug, chapter, provider=provider, settings=settings)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502, detail=f"تشخیص موضوع ناموفق: {exc}") from exc
+        return {"topic_profile": profile}
+
+    @app.put("/api/handout/{slug}/{chapter}/topic")
+    def handout_topic_save(slug: str, chapter: int, payload: Annotated[TopicPatch, Body()]) -> dict:
+        from darsamooz.topic import update_topic_profile
+
+        settings = _resolved_settings(root)
+        _check_source(slug, chapter, settings)
+        patch = payload.model_dump(exclude_none=True)
+        confirm = bool(patch.pop("confirm", True))
+        profile = update_topic_profile(slug, chapter, patch, confirm=confirm, settings=settings)
+        return {"topic_profile": profile}
+
+    @app.post("/api/handout/{slug}/{chapter}/mine")
+    def handout_mine(slug: str, chapter: int, payload: Annotated[MineBody, Body()] = MineBody()) -> dict:
+        from darsamooz.patterns import load_web_sources, mine_web_patterns
+        from darsamooz.topic import load_topic_profile
+        from darsamooz.web_search import VALID_BACKENDS, WebSearchError
+
+        settings = _resolved_settings(root)
+        _check_source(slug, chapter, settings)
+        if payload.backend not in VALID_BACKENDS:
+            raise HTTPException(400, detail=f"backend نامعتبر: {payload.backend}")
+        profile = load_topic_profile(slug, chapter, settings)
+        if not profile:
+            raise HTTPException(400, detail="اول موضوع جزوه را تشخیص دهید (مرحله ۱).")
+        provider = _llm(payload.llm_provider, payload.llm_model, settings)
+        logs: list[str] = []
+        try:
+            pack = mine_web_patterns(
+                slug,
+                chapter,
+                provider=provider,
+                settings=settings,
+                profile=profile,
+                backend=payload.backend,
+                max_sources=payload.max_sources,
+                llm_only=payload.llm_only,
+                fetch_pages=payload.fetch_pages,
+                on_log=logs.append,
+            )
+        except WebSearchError as exc:
+            return {
+                "ok": False,
+                "search_failed": True,
+                "error": str(exc),
+                "attempts": exc.attempts,
+                "logs": logs,
+                "can_continue_llm_only": True,
+            }
+        except (RuntimeError, FileNotFoundError) as exc:
+            raise HTTPException(502, detail=f"استخراج الگو ناموفق: {exc}") from exc
+        return {
+            "ok": True,
+            "pattern_pack": pack,
+            "web_sources": load_web_sources(slug, chapter, settings),
+            "logs": logs,
+        }
+
+    @app.put("/api/handout/{slug}/{chapter}/patterns")
+    def handout_patterns_save(slug: str, chapter: int, payload: Annotated[dict, Body()]) -> dict:
+        from darsamooz.patterns import update_pattern_pack
+
+        settings = _resolved_settings(root)
+        _check_source(slug, chapter, settings)
+        try:
+            pack = update_pattern_pack(slug, chapter, payload, settings=settings)
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+        return {"pattern_pack": pack}
+
 
     @app.get("/api/jobs/active")
     def active_job() -> dict:

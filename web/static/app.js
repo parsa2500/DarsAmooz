@@ -182,6 +182,15 @@
       }
       extra.textContent = line;
       resultPaths.appendChild(extra);
+      if (m.pattern_pack_used) {
+        const pp = document.createElement("li");
+        pp.textContent =
+          `بسته الگو: ${m.pattern_pack_status === "web" ? "از وب" : "بدون وب"} · ` +
+          `${m.patterns_count} الگو · ${m.web_sources_count ?? 0} منبع · ` +
+          `رد به‌خاطر شباهت به تست وب: ${m.web_dup_rejected ?? 0}` +
+          (m.search_error ? ` · خطای جستجو: ${m.search_error}` : "");
+        resultPaths.appendChild(pp);
+      }
       if (m.fallback_count) {
         const warn = document.createElement("li");
         warn.style.color = "#b45309";
@@ -429,6 +438,7 @@
         export_profile: profileEl.value || null,
         llm_provider: providerEl && providerEl.value ? providerEl.value : null,
         llm_model: modelEl && modelEl.value.trim() ? modelEl.value.trim() : null,
+        use_pattern_pack: !!($("use-pattern-pack") && $("use-pattern-pack").checked && !sampleEl.checked),
       };
       const job = await api("/api/generate", { method: "POST", body: JSON.stringify(body) });
       currentJobId = job.id;
@@ -471,6 +481,10 @@
 
   bookSourceEl.addEventListener("change", () => {
     syncSourceUi();
+    document.dispatchEvent(new CustomEvent("darsamooz:source-changed"));
+  });
+  chapterEl.addEventListener("change", () => {
+    document.dispatchEvent(new CustomEvent("darsamooz:source-changed"));
   });
 
   btnIngestPdf.addEventListener("click", async () => {
@@ -499,6 +513,9 @@
       uploadHint.textContent = `خوانده شد: ${nCh} فصل · ${data.title || data.book_slug}`;
       uploadHint.className = "hint ok";
       setStatus("ok", "PDF خوانده شد", `${nCh} فصل آماده تولید`);
+      document.dispatchEvent(
+        new CustomEvent("darsamooz:ingested", { detail: { book_slug: data.book_slug, chapters: data.chapters || [] } })
+      );
     } catch (err) {
       uploadHint.textContent = err.message;
       uploadHint.className = "hint warn";
@@ -629,5 +646,15 @@
     }
   }
 
-  boot();
+  window.DarsAmooz = {
+    api,
+    currentSource: () => ({
+      slug: currentBookSlug,
+      chapter: chapterEl.value ? Number(chapterEl.value) : null,
+      provider: providerEl && providerEl.value ? providerEl.value : null,
+      model: modelEl && modelEl.value.trim() ? modelEl.value.trim() : null,
+    }),
+  };
+
+  boot().then(() => document.dispatchEvent(new CustomEvent("darsamooz:source-changed")));
 })();
