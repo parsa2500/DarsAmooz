@@ -35,6 +35,7 @@ from darsamooz.web_search import (
     html_to_lines,
     parse_duckduckgo_html,
     search_google_cse,
+    search_tavily,
     web_research,
 )
 
@@ -200,6 +201,7 @@ def _ddg_one(q, max_results=8):
 
 
 def test_auto_tries_google_cse_then_duckduckgo_on_quota(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_CSE_API_KEY", "test-key")
     monkeypatch.setenv("GOOGLE_CSE_CX", "test-cx")
     cse_calls = []
@@ -226,6 +228,7 @@ def test_auto_tries_google_cse_then_duckduckgo_on_quota(monkeypatch):
 
 
 def test_auto_skips_gemini_and_cse_without_keys(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_CSE_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_CSE_CX", raising=False)
     monkeypatch.setattr("darsamooz.web_search.provider_api_key", lambda name: "gemini-key")
@@ -334,6 +337,165 @@ def test_search_google_cse_requires_keys(monkeypatch):
         search_google_cse("q")
 
 
+def _tavily_one(q, max_results=8, include_raw_content=False):
+    return [SearchHit(url="https://tavily.ir/t", title="T", snippet="s", query=q, backend="tavily")]
+
+
+def test_auto_uses_tavily_first_when_key_set(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "cx")
+    logs: list[str] = []
+
+    def boom(*a, **k):
+        raise AssertionError("later backends must not run when Tavily succeeds")
+
+    res = web_research(
+        ["q1", "q2"],
+        topic_line="t",
+        tavily_search=_tavily_one,
+        cse_search=boom,
+        ddg_search=boom,
+        fetch_pages=False,
+        delay_s=0,
+        on_log=logs.append,
+    )
+    assert res["backend"] == "tavily"
+    assert [a["backend"] for a in res["attempts"]] == ["tavily"]
+    assert res["attempts"][0]["ok"] is True
+    assert res["search_requests"] == 2
+    assert res["sources"][0]["url"] == "https://tavily.ir/t"
+    assert any("ترتیب جستجوی auto: tavily → google_cse → duckduckgo" in m for m in logs)
+    assert any("موفق شد" in m and "tavily" in m for m in logs)
+
+
+def test_auto_falls_back_from_tavily_quota_to_google(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "cx")
+    logs: list[str] = []
+    tavily_calls: list[str] = []
+
+    def tavily_quota(q, max_results=8, include_raw_content=False):
+        tavily_calls.append(q)
+        raise SearchQuotaExceeded("سهمیه Tavily تمام شد (HTTP 432)")
+
+    def cse_one(q, max_results=10, start=1):
+        return [SearchHit(url="https://cse.ir/t", title="C", query=q, backend="google_cse")]
+
+    def boom(*a, **k):
+        raise AssertionError("DuckDuckGo must not run when Google CSE succeeds")
+
+    res = web_research(
+        ["تست چگالی", "تست کنکور"],
+        topic_line="t",
+        tavily_search=tavily_quota,
+        cse_search=cse_one,
+        ddg_search=boom,
+        fetch_pages=False,
+        delay_s=0,
+        on_log=logs.append,
+    )
+    assert tavily_calls == ["تست چگالی"]  # auth/quota stops the engine immediately
+    assert res["backend"] == "google_cse"
+    assert res["attempts"][0]["backend"] == "tavily"
+    assert res["attempts"][0]["ok"] is False and "سهمیه" in res["attempts"][0]["error"]
+    assert res["attempts"][1]["backend"] == "google_cse" and res["attempts"][1]["ok"] is True
+    assert any("سراغ google_cse می‌رویم" in m for m in logs)
+
+
+def test_explicit_tavily_backend(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    res = web_research(
+        ["q"],
+        topic_line="t",
+        backend="tavily",
+        tavily_search=_tavily_one,
+        fetch_pages=False,
+        delay_s=0,
+    )
+    assert res["backend"] == "tavily" and res["sources"][0]["backend"] == "tavily"
+
+
+def test_search_tavily_request_and_parse(monkeypatch):
+    import httpx
+    import json as _json
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-secret")
+    monkeypatch.delenv("TAVILY_COUNTRY", raising=False)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        seen["authorization"] = request.headers.get("authorization")
+        seen["body"] = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"results": [
+            {"url": "https://gama.ir/exams/1", "title": "گاما", "content": "تست   فیزیک\nدهم"},
+            {"url": "ftp://bad", "title": "x", "content": "nope"},
+            {"url": "https://kanoon.ir/a", "title": "کانون", "content": "", "raw_content": "متن خام"},
+        ]})
+
+    hits = search_tavily("تست فیزیک دهم", max_results=8, client=_mock_client(handler))
+    assert seen["url"] == "https://api.tavily.com/search"
+    assert seen["method"] == "POST"
+    assert seen["authorization"] == "Bearer tvly-secret"
+    body = seen["body"]
+    assert body["query"] == "تست فیزیک دهم"
+    assert body["max_results"] == 8
+    assert body["search_depth"] == "basic"
+    assert body["country"] == "iran"
+    assert "api_key" not in body
+    assert "include_raw_content" not in body
+    assert [h.url for h in hits] == ["https://gama.ir/exams/1", "https://kanoon.ir/a"]
+    assert hits[0].backend == "tavily" and hits[0].snippet == "تست فیزیک دهم"
+    assert hits[1].snippet == "متن خام"
+
+
+def test_search_tavily_include_raw_content_flag(monkeypatch):
+    import httpx
+    import json as _json
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-secret")
+    monkeypatch.setenv("TAVILY_COUNTRY", "none")
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"results": []})
+
+    search_tavily("q", include_raw_content=True, client=_mock_client(handler))
+    assert seen["body"]["include_raw_content"] is True
+    assert "country" not in seen["body"]
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "exc_type", "needle"),
+    [
+        (401, {"detail": {"error": "Unauthorized: missing or invalid API key."}}, WebSearchError, "TAVILY_API_KEY"),
+        (429, {"detail": {"error": "Your request has been blocked due to excessive requests."}}, SearchRateLimited, "429"),
+        (432, {"detail": {"error": "This request exceeds your plan's set usage limit."}}, SearchQuotaExceeded, "سهمیه"),
+        (433, {"detail": {"error": "This request exceeds the pay-as-you-go limit."}}, SearchQuotaExceeded, "سهمیه"),
+        (400, {"detail": {"error": "Invalid topic."}}, WebSearchError, "رد کرد"),
+    ],
+)
+def test_search_tavily_errors(monkeypatch, status, payload, exc_type, needle):
+    import httpx
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-secret")
+    client = _mock_client(lambda r: httpx.Response(status, json=payload))
+    with pytest.raises(WebSearchError) as ei:
+        search_tavily("q", client=client)
+    assert isinstance(ei.value, exc_type)
+    assert needle in str(ei.value)
+
+
+def test_search_tavily_requires_key(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    with pytest.raises(WebSearchError, match="TAVILY_API_KEY"):
+        search_tavily("q")
+
+
 def test_explicit_gemini_backend_still_optional(monkeypatch):
     def gemini_ok(queries, **kw):
         return [SearchHit(url="https://g.ir/x", backend="gemini")], {"summary": "s"}
@@ -343,6 +505,7 @@ def test_explicit_gemini_backend_still_optional(monkeypatch):
 
 
 def test_web_research_raises_when_nothing_found(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_CSE_API_KEY", raising=False)
 
     def ddg_empty(q, max_results=8):
@@ -549,7 +712,7 @@ def test_api_handout_flow(api_client):
     base = f"/api/handout/{SLUG}/1"
     state = c.get(base).json()
     assert (state["topic_profile"], state["web_sources"], state["pattern_pack"]) == (None, None, None)
-    assert set(state["search"]) == {"google_cse_configured", "max_queries"}
+    assert set(state["search"]) == {"tavily_configured", "google_cse_configured", "max_queries"}
 
     r = c.post(f"{base}/analyze", json={})
     assert r.status_code == 200, r.text
@@ -618,6 +781,7 @@ def test_cli_mine_web_patterns_failure_message(tmp_path, monkeypatch):
 
 
 def test_duckduckgo_rate_limit_stops_after_first_query(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_CSE_API_KEY", raising=False)
     calls = []
 

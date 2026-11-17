@@ -195,7 +195,7 @@ def create_app() -> FastAPI:
             "default_export_profile": DEFAULT_PROFILE_ID,
             "verify_default": True,
             "max_upload_bytes": _MAX_UPLOAD_BYTES,
-            "has_tavily_key": False,
+            "has_tavily_key": settings.has_tavily_key,
             "style_mine_ready": bool(settings.api_key),
             "question_patterns": [
                 {"id": p.value, "label_fa": PATTERN_LABEL_FA[p]} for p in QuestionPattern
@@ -335,12 +335,13 @@ def create_app() -> FastAPI:
     def handout_state(slug: str, chapter: int) -> dict:
         from darsamooz.patterns import load_pattern_pack, load_web_sources
         from darsamooz.topic import load_topic_profile
-        from darsamooz.web_search import google_cse_configured, max_queries_per_run
+        from darsamooz.web_search import google_cse_configured, max_queries_per_run, tavily_configured
 
         settings = _resolved_settings(root)
         _check_source(slug, chapter, settings)
         return {
             "search": {
+                "tavily_configured": tavily_configured(),
                 "google_cse_configured": google_cse_configured(),
                 "max_queries": max_queries_per_run(),
             },

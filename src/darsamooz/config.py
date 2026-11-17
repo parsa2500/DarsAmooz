@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     # Explicit selector: gemini | openrouter | openai
     llm_provider: str | None = None
     llm_fallback_provider: str | None = None
-    # Optional: web style mining (Tavily). Also read via tavily_api_key().
+    # Optional: Tavily web search for the handout flow. Also read via tavily_api_key().
     tavily_api_key: str | None = None
 
     @property

@@ -568,10 +568,10 @@ def analyze_topic_cmd(book_slug: str, chapter: int, llm_provider: str | None, ll
 @click.option("--chapter", type=int, required=True)
 @click.option(
     "--backend",
-    type=click.Choice(["auto", "google_cse", "duckduckgo", "gemini"], case_sensitive=False),
+    type=click.Choice(["auto", "tavily", "google_cse", "duckduckgo", "gemini"], case_sensitive=False),
     default="auto",
     show_default=True,
-    help="auto = google_cse (if GOOGLE_CSE_API_KEY+GOOGLE_CSE_CX set) then duckduckgo; gemini only when chosen",
+    help="auto = tavily (if TAVILY_API_KEY set) then google_cse (if both CSE keys set) then duckduckgo; gemini only when chosen",
 )
 @click.option("--max-sources", type=int, default=8, show_default=True)
 @click.option(
@@ -630,7 +630,7 @@ def mine_web_patterns_cmd(
     except WebSearchError as exc:
         raise click.ClickException(
             f"Web search failed: {exc}\n"
-            "No sources were invented. Re-run later, try --backend duckduckgo, "
+            "No sources were invented. Re-run later, try --backend tavily or --backend duckduckgo, "
             "or continue with --llm-only (LLM-only patterns, clearly marked)."
         ) from exc
     except (RuntimeError, FileNotFoundError) as exc:

@@ -211,10 +211,22 @@
       state = { topic: data.topic_profile, sources: data.web_sources, pack: data.pattern_pack };
       const sh = $("search-hint");
       if (sh && data.search) {
-        sh.textContent = data.search.google_cse_configured
-          ? `Google Programmable Search فعال است · سقف ${data.search.max_queries} جستجو در هر اجرا (سهمیه رایگان: ۱۰۰ جستجو در روز)`
-          : `کلید Google تنظیم نشده (GOOGLE_CSE_API_KEY و GOOGLE_CSE_CX در .env) — فعلاً فقط DuckDuckGo · سقف ${data.search.max_queries} جستجو در هر اجرا`;
-        sh.className = "hint " + (data.search.google_cse_configured ? "ok" : "warn");
+        const tv = data.search.tavily_configured;
+        const cse = data.search.google_cse_configured;
+        const cap = `سقف ${data.search.max_queries} جستجو در هر اجرا`;
+        if (tv && cse) {
+          sh.textContent = `Tavily فعال است · Google CSE هم به‌عنوان مرحله بعد در auto موجود است · ${cap}`;
+          sh.className = "hint ok";
+        } else if (tv) {
+          sh.textContent = `Tavily فعال است (TAVILY_API_KEY) · ${cap}`;
+          sh.className = "hint ok";
+        } else if (cse) {
+          sh.textContent = `Google Programmable Search فعال است · سقف ${data.search.max_queries} جستجو در هر اجرا (سهمیه رایگان: ۱۰۰ جستجو در روز)`;
+          sh.className = "hint ok";
+        } else {
+          sh.textContent = `کلید Tavily یا Google تنظیم نشده (TAVILY_API_KEY یا GOOGLE_CSE_API_KEY+GOOGLE_CSE_CX در .env) — فعلاً فقط DuckDuckGo · ${cap}`;
+          sh.className = "hint warn";
+        }
       }
     } catch (err) {
       state = { topic: null, sources: null, pack: null };

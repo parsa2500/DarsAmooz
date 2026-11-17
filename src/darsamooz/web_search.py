@@ -1,17 +1,20 @@
 """Real web search for exam-test *styles* (step 2 of the handout flow).
 
-Backends (no extra cost):
+Backends:
 
+* ``tavily``     — Tavily Search API (TAVILY_API_KEY). Preferred when the key is set.
 * ``google_cse`` — Google Programmable Search / Custom Search JSON API
                    (GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX; 100 free queries/day).
+                   Closed to new customers; kept as an optional fallback.
 * ``duckduckgo`` — keyless DuckDuckGo HTML endpoint (rate-limits easily).
 * ``gemini``     — Gemini ``google_search`` grounding. Optional, only when chosen
                    explicitly; never part of ``auto``.
 
-``auto`` = google_cse (when both env vars are set) then duckduckgo. Every attempt
-is recorded, the number of search requests per run is capped
-(WEB_SEARCH_MAX_QUERIES, default 6), and if nothing is found
-:class:`WebSearchError` is raised — sources are never invented.
+``auto`` = tavily (when TAVILY_API_KEY is set), then google_cse (when both
+CSE env vars are set), then duckduckgo. Every attempt is recorded, skipped
+backends and fallbacks are logged (never silent), the number of search
+requests per run is capped (WEB_SEARCH_MAX_QUERIES, default 6), and if
+nothing is found :class:`WebSearchError` is raised — sources are never invented.
 """
 
 from __future__ import annotations
@@ -27,15 +30,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from darsamooz.config import provider_api_key
+from darsamooz.config import provider_api_key, tavily_api_key as settings_tavily_api_key
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
-VALID_BACKENDS = ("auto", "google_cse", "duckduckgo", "gemini")
+VALID_BACKENDS = ("auto", "tavily", "google_cse", "duckduckgo", "gemini")
 DEFAULT_MAX_QUERIES = 6
 GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 # Video / social pages carry no question text worth fetching.
 _SKIP_FETCH_DOMAINS = (
     "aparat.com",
@@ -82,6 +86,14 @@ def google_cse_credentials() -> tuple[str | None, str | None]:
 def google_cse_configured() -> bool:
     key, cx = google_cse_credentials()
     return bool(key and cx)
+
+
+def tavily_credentials() -> str | None:
+    return settings_tavily_api_key() or _env("TAVILY_API_KEY")
+
+
+def tavily_configured() -> bool:
+    return bool(tavily_credentials())
 
 
 def max_queries_per_run() -> int:
@@ -382,6 +394,110 @@ def search_google_cse(
     return hits
 
 
+# ---------------------------------------------------------------- Tavily
+
+def _tavily_error_message(res: httpx.Response) -> str:
+    try:
+        data = res.json() or {}
+    except ValueError:
+        data = {}
+    detail = data.get("detail")
+    if isinstance(detail, dict):
+        return str(detail.get("error") or detail)
+    if isinstance(detail, list):
+        parts = []
+        for item in detail:
+            if isinstance(item, dict):
+                parts.append(str(item.get("msg") or item.get("error") or item))
+            else:
+                parts.append(str(item))
+        return "; ".join(parts) or res.text[:200]
+    if isinstance(detail, str) and detail.strip():
+        return detail
+    return str(data.get("error") or res.text[:200])
+
+
+def _tavily_error(res: httpx.Response) -> WebSearchError:
+    message = _tavily_error_message(res)
+    if res.status_code == 401:
+        return WebSearchError(
+            f"Tavily کلید را رد کرد (HTTP 401) — TAVILY_API_KEY را بررسی کنید: {message[:160]}"
+        )
+    if res.status_code == 429:
+        return SearchRateLimited(
+            f"Tavily درخواست‌ها را محدود کرد (HTTP 429): {message[:160]}"
+        )
+    if res.status_code in (432, 433):
+        return SearchQuotaExceeded(
+            f"سهمیه Tavily تمام شد (HTTP {res.status_code}): {message[:160]} — "
+            "سهمیه پلن را در داشبورد Tavily بررسی کنید."
+        )
+    if res.status_code in (400, 422):
+        return WebSearchError(
+            f"Tavily درخواست را رد کرد (HTTP {res.status_code}): {message[:160]}"
+        )
+    return WebSearchError(f"Tavily HTTP {res.status_code}: {message[:160]}")
+
+
+def search_tavily(
+    query: str,
+    *,
+    max_results: int = 8,
+    include_raw_content: bool = False,
+    api_key: str | None = None,
+    client: httpx.Client | None = None,
+) -> list[SearchHit]:
+    """One Tavily Search request (POST /search, Bearer auth, no key in the body)."""
+    key = api_key or tavily_credentials()
+    if not key:
+        raise WebSearchError("TAVILY_API_KEY تنظیم نشده.")
+    body: dict[str, Any] = {
+        "query": query,
+        "max_results": max(1, min(int(max_results), 20)),
+        "search_depth": "basic",
+    }
+    if include_raw_content:
+        body["include_raw_content"] = True
+    country = _env("TAVILY_COUNTRY", "iran")
+    if country and country.lower() != "none":
+        body["country"] = country.lower()
+    own = client is None
+    client = client or httpx.Client(timeout=30.0)
+    try:
+        res = client.post(
+            TAVILY_SEARCH_URL,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+    finally:
+        if own:
+            client.close()
+    if res.status_code >= 400:
+        raise _tavily_error(res)
+    data = res.json() or {}
+    hits: list[SearchHit] = []
+    for item in data.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith("http"):
+            continue
+        snippet_src = item.get("content") or item.get("raw_content") or ""
+        hits.append(
+            SearchHit(
+                url=url,
+                title=str(item.get("title") or "")[:200],
+                snippet=re.sub(r"\s+", " ", str(snippet_src)).strip()[:400],
+                query=query,
+                backend="tavily",
+            )
+        )
+    return hits
+
+
 # ---------------------------------------------------------------- page excerpts
 
 _OPTION_LINE = re.compile(
@@ -474,6 +590,7 @@ def web_research(
     fetch_pages: bool = True,
     on_log: Callable[[str], None] | None = None,
     cse_search: Callable[..., list[SearchHit]] | None = None,
+    tavily_search: Callable[..., list[SearchHit]] | None = None,
     ddg_search: Callable[..., list[SearchHit]] | None = None,
     gemini_search: Callable[..., tuple[list[SearchHit], dict[str, Any]]] | None = None,
     page_fetcher: Callable[[str, httpx.Client], tuple[list[str], str]] | None = None,
@@ -492,15 +609,30 @@ def web_research(
     budget = max(1, int(max_queries)) if max_queries else max_queries_per_run()
     log = on_log or (lambda _m: None)
     cse_search = cse_search or search_google_cse
+    tavily_search = tavily_search or search_tavily
     ddg_search = ddg_search or search_duckduckgo
     gemini_search = gemini_search or search_gemini_grounded
     page_fetcher = page_fetcher or fetch_page_excerpts
 
     order: list[str]
     if backend == "auto":
-        order = (["google_cse"] if google_cse_configured() else []) + ["duckduckgo"]
+        order = []
+        skipped: list[str] = []
+        if tavily_configured():
+            order.append("tavily")
+        else:
+            skipped.append("tavily (TAVILY_API_KEY تنظیم نشده)")
+        if google_cse_configured():
+            order.append("google_cse")
+        else:
+            skipped.append("google_cse (GOOGLE_CSE_API_KEY / GOOGLE_CSE_CX تنظیم نشده)")
+        order.append("duckduckgo")
+        plan = " → ".join(order)
+        skip_txt = ("؛ رد شد: " + "؛ ".join(skipped)) if skipped else ""
+        log(f"ترتیب جستجوی auto: {plan}{skip_txt}")
     else:
         order = [backend]
+        log(f"جستجوی وب با روش انتخاب‌شده: {backend}")
 
     attempts: list[dict[str, Any]] = []
     hits: list[SearchHit] = []
@@ -529,7 +661,7 @@ def web_research(
                 plan: list[tuple[str, int]] = [(q, 1) for q in queries]
                 if name == "google_cse":
                     plan += [(q, 11) for q in queries]
-                label = "Google CSE" if name == "google_cse" else "DuckDuckGo"
+                label = {"google_cse": "Google CSE", "tavily": "Tavily", "duckduckgo": "DuckDuckGo"}[name]
                 seen_keys: set[str] = set()
                 for q, start in plan:
                     if requests_used + sent >= budget:
@@ -544,6 +676,8 @@ def web_research(
                     try:
                         if name == "google_cse":
                             batch = cse_search(q, max_results=10, start=start)
+                        elif name == "tavily":
+                            batch = tavily_search(q, max_results=max_sources)
                         else:
                             batch = ddg_search(q, max_results=max_sources)
                     except SearchRateLimited as exc:
@@ -551,8 +685,8 @@ def web_research(
                         break  # quota / captcha: stop sending requests to this engine
                     except WebSearchError as exc:
                         errors.append(str(exc))
-                        if name == "google_cse":
-                            break  # config errors repeat for every query
+                        if name in ("google_cse", "tavily"):
+                            break  # config / auth errors repeat for every query
                         continue
                     except httpx.HTTPError as exc:
                         errors.append(f"{type(exc).__name__}: {exc}")
@@ -573,11 +707,23 @@ def web_research(
             attempts.append(attempt)
             hits = found
             used_backend = name
+            log(f"جستجو با {name} موفق شد: {len(found)} منبع.")
             break
         except (WebSearchError, httpx.HTTPError) as exc:
             requests_used += sent
             attempts.append({"backend": name, "ok": False, "requests": sent, "error": str(exc)[:300]})
-            log(f"جستجو با {name} ناموفق: {str(exc)[:160]}")
+            nxt = None
+            try:
+                nxt = order[order.index(name) + 1]
+            except (ValueError, IndexError):
+                nxt = None
+            if nxt:
+                log(
+                    f"جستجو با {name} ناموفق: {str(exc)[:160]} — "
+                    f"سراغ {nxt} می‌رویم (سوییچ بی‌صدا نیست)."
+                )
+            else:
+                log(f"جستجو با {name} ناموفق: {str(exc)[:160]}")
 
     if not hits:
         raise WebSearchError(
