@@ -1,13 +1,16 @@
 """Real web search for exam-test *styles* (step 2 of the handout flow).
 
-Backends (all free / no extra cost):
+Backends (no extra cost):
 
-* ``gemini``     — Gemini API ``google_search`` grounding (uses GEMINI_API_KEY).
-                   Source URLs come from ``groundingMetadata`` (not model text).
-* ``duckduckgo`` — keyless DuckDuckGo HTML endpoint.
+* ``google_cse`` — Google Programmable Search / Custom Search JSON API
+                   (GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX; 100 free queries/day).
+* ``duckduckgo`` — keyless DuckDuckGo HTML endpoint (rate-limits easily).
+* ``gemini``     — Gemini ``google_search`` grounding. Optional, only when chosen
+                   explicitly; never part of ``auto``.
 
-``auto`` tries gemini (when a key exists) then duckduckgo. Every attempt is
-recorded so failures are visible. If no backend returns a single source,
+``auto`` = google_cse (when both env vars are set) then duckduckgo. Every attempt
+is recorded, the number of search requests per run is capped
+(WEB_SEARCH_MAX_QUERIES, default 6), and if nothing is found
 :class:`WebSearchError` is raised — sources are never invented.
 """
 
@@ -30,7 +33,9 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
-VALID_BACKENDS = ("auto", "gemini", "duckduckgo")
+VALID_BACKENDS = ("auto", "google_cse", "duckduckgo", "gemini")
+DEFAULT_MAX_QUERIES = 6
+GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
 # Video / social pages carry no question text worth fetching.
 _SKIP_FETCH_DOMAINS = (
     "aparat.com",
@@ -55,6 +60,37 @@ class WebSearchError(RuntimeError):
 
 class SearchRateLimited(WebSearchError):
     """The search engine answered with a captcha / rate limit; stop sending queries."""
+
+
+class SearchQuotaExceeded(SearchRateLimited):
+    """Daily/project quota used up (e.g. Google CSE 100 free queries/day)."""
+
+
+def _env(name: str, default: str | None = None) -> str | None:
+    import os
+
+    val = os.environ.get(name)
+    if val is None or not str(val).strip():
+        return default
+    return str(val).strip()
+
+
+def google_cse_credentials() -> tuple[str | None, str | None]:
+    return _env("GOOGLE_CSE_API_KEY"), _env("GOOGLE_CSE_CX")
+
+
+def google_cse_configured() -> bool:
+    key, cx = google_cse_credentials()
+    return bool(key and cx)
+
+
+def max_queries_per_run() -> int:
+    raw = _env("WEB_SEARCH_MAX_QUERIES")
+    try:
+        n = int(raw) if raw else DEFAULT_MAX_QUERIES
+    except ValueError:
+        n = DEFAULT_MAX_QUERIES
+    return max(1, min(n, 20))
 
 
 @dataclass
@@ -257,6 +293,95 @@ def search_gemini_grounded(
     return hits, meta
 
 
+# ---------------------------------------------------------------- Google CSE
+
+_CSE_QUOTA_REASONS = ("dailylimitexceeded", "ratelimitexceeded", "quotaexceeded", "userratelimitexceeded")
+
+
+def _cse_error(res: httpx.Response) -> WebSearchError:
+    try:
+        err = (res.json() or {}).get("error") or {}
+    except ValueError:
+        err = {}
+    message = str(err.get("message") or res.text[:200])
+    reasons = " ".join(
+        str(e.get("reason") or "") for e in (err.get("errors") or []) if isinstance(e, dict)
+    ).lower()
+    status = str(err.get("status") or "").lower()
+    blob = f"{reasons} {status} {message.lower()}"
+    if res.status_code == 429 or any(r in blob for r in _CSE_QUOTA_REASONS) or "quota" in blob:
+        return SearchQuotaExceeded(
+            f"سهمیه Google Custom Search تمام شد (HTTP {res.status_code}): {message[:160]} — "
+            "سهمیه رایگان ۱۰۰ جستجو در روز است؛ فردا دوباره امتحان کنید."
+        )
+    if res.status_code == 403 and ("accessnotconfigured" in blob or "has not been used" in blob or "disabled" in blob):
+        return WebSearchError(
+            f"Custom Search API در پروژه Google Cloud فعال نیست (HTTP 403): {message[:160]}"
+        )
+    if res.status_code in (400, 401, 403):
+        return WebSearchError(
+            f"Google CSE درخواست را رد کرد (HTTP {res.status_code}) — GOOGLE_CSE_API_KEY / GOOGLE_CSE_CX را بررسی کنید: {message[:160]}"
+        )
+    return WebSearchError(f"Google CSE HTTP {res.status_code}: {message[:160]}")
+
+
+def search_google_cse(
+    query: str,
+    *,
+    max_results: int = 10,
+    start: int = 1,
+    api_key: str | None = None,
+    cx: str | None = None,
+    client: httpx.Client | None = None,
+) -> list[SearchHit]:
+    """One Custom Search JSON API request (= 1 of the 100 free daily queries)."""
+    env_key, env_cx = google_cse_credentials()
+    key = api_key or env_key
+    engine = cx or env_cx
+    if not key or not engine:
+        raise WebSearchError("GOOGLE_CSE_API_KEY و GOOGLE_CSE_CX تنظیم نشده‌اند.")
+    params: dict[str, Any] = {
+        "key": key,
+        "cx": engine,
+        "q": query,
+        "num": max(1, min(int(max_results), 10)),
+        "start": max(1, int(start)),
+        "hl": "fa",
+        "safe": "active",
+    }
+    lr = _env("GOOGLE_CSE_LR", "lang_fa")
+    if lr and lr.lower() != "none":
+        params["lr"] = lr
+    gl = _env("GOOGLE_CSE_GL", "ir")
+    if gl and gl.lower() != "none":
+        params["gl"] = gl
+    own = client is None
+    client = client or httpx.Client(timeout=30.0)
+    try:
+        res = client.get(GOOGLE_CSE_URL, params=params)
+    finally:
+        if own:
+            client.close()
+    if res.status_code >= 400:
+        raise _cse_error(res)
+    data = res.json() or {}
+    hits: list[SearchHit] = []
+    for item in data.get("items") or []:
+        url = str(item.get("link") or "").strip()
+        if not url.startswith("http"):
+            continue
+        hits.append(
+            SearchHit(
+                url=url,
+                title=str(item.get("title") or "")[:200],
+                snippet=re.sub(r"\s+", " ", str(item.get("snippet") or "")).strip()[:400],
+                query=query,
+                backend="google_cse",
+            )
+        )
+    return hits
+
+
 # ---------------------------------------------------------------- page excerpts
 
 _OPTION_LINE = re.compile(
@@ -335,34 +460,45 @@ def fetch_page_excerpts(url: str, client: httpx.Client) -> tuple[list[str], str]
 # ---------------------------------------------------------------- orchestration
 
 
+def _url_key(url: str) -> str:
+    return url.split("#")[0].rstrip("/")
+
+
 def web_research(
     queries: list[str],
     *,
     topic_line: str,
     backend: str = "auto",
     max_sources: int = 8,
+    max_queries: int | None = None,
     fetch_pages: bool = True,
     on_log: Callable[[str], None] | None = None,
+    cse_search: Callable[..., list[SearchHit]] | None = None,
     ddg_search: Callable[..., list[SearchHit]] | None = None,
     gemini_search: Callable[..., tuple[list[SearchHit], dict[str, Any]]] | None = None,
     page_fetcher: Callable[[str, httpx.Client], tuple[list[str], str]] | None = None,
     delay_s: float = 1.5,
 ) -> dict[str, Any]:
-    """Run real web search and fetch question excerpts. Raises WebSearchError when empty."""
+    """Run real web search and fetch question excerpts. Raises WebSearchError when empty.
+
+    ``max_queries`` caps search requests for the whole run (all backends together).
+    """
     backend = (backend or "auto").strip().lower()
     if backend not in VALID_BACKENDS:
         raise ValueError(f"backend must be one of {VALID_BACKENDS}")
-    queries = [q.strip() for q in queries if q and q.strip()][:4]
+    queries = [q.strip() for q in queries if q and q.strip()][:6]
     if not queries:
         raise WebSearchError("هیچ عبارت جستجویی در پروفایل موضوع نیست.")
+    budget = max(1, int(max_queries)) if max_queries else max_queries_per_run()
     log = on_log or (lambda _m: None)
+    cse_search = cse_search or search_google_cse
     ddg_search = ddg_search or search_duckduckgo
     gemini_search = gemini_search or search_gemini_grounded
     page_fetcher = page_fetcher or fetch_page_excerpts
 
     order: list[str]
     if backend == "auto":
-        order = (["gemini"] if provider_api_key("gemini") else []) + ["duckduckgo"]
+        order = (["google_cse"] if google_cse_configured() else []) + ["duckduckgo"]
     else:
         order = [backend]
 
@@ -370,40 +506,77 @@ def web_research(
     hits: list[SearchHit] = []
     used_backend: str | None = None
     gemini_meta: dict[str, Any] | None = None
+    requests_used = 0
 
     for name in order:
+        if requests_used >= budget:
+            attempts.append(
+                {"backend": name, "ok": False, "requests": 0, "error": f"سقف {budget} جستجو در این اجرا پر شد."}
+            )
+            continue
+        found: list[SearchHit] = []
+        errors: list[str] = []
+        sent = 0
         try:
             if name == "gemini":
                 log("جستجوی وب با Gemini google_search…")
+                sent = 1
                 found, gemini_meta = gemini_search(
                     queries, topic_line=topic_line, max_results=max_sources
                 )
             else:
-                found = []
-                errors: list[str] = []
-                for qi, q in enumerate(queries):
-                    log(f"جستجوی DuckDuckGo: {q}")
+                # (query, start) plan: every query once, then page 2 of the first ones (CSE only).
+                plan: list[tuple[str, int]] = [(q, 1) for q in queries]
+                if name == "google_cse":
+                    plan += [(q, 11) for q in queries]
+                label = "Google CSE" if name == "google_cse" else "DuckDuckGo"
+                seen_keys: set[str] = set()
+                for q, start in plan:
+                    if requests_used + sent >= budget:
+                        log(f"سقف {budget} جستجو در این اجرا رسید.")
+                        break
+                    if len(seen_keys) >= max_sources:
+                        break
+                    if sent and delay_s and name == "duckduckgo":
+                        time.sleep(delay_s)
+                    log(f"جستجوی {label}: {q}" + (f" (صفحه {start // 10 + 1})" if start > 1 else ""))
+                    sent += 1
                     try:
-                        found.extend(ddg_search(q, max_results=max_sources))
+                        if name == "google_cse":
+                            batch = cse_search(q, max_results=10, start=start)
+                        else:
+                            batch = ddg_search(q, max_results=max_sources)
                     except SearchRateLimited as exc:
                         errors.append(str(exc))
-                        break  # don't hammer a rate-limited engine
+                        break  # quota / captcha: stop sending requests to this engine
                     except WebSearchError as exc:
                         errors.append(str(exc))
+                        if name == "google_cse":
+                            break  # config errors repeat for every query
+                        continue
                     except httpx.HTTPError as exc:
                         errors.append(f"{type(exc).__name__}: {exc}")
-                    if qi + 1 < len(queries) and delay_s:
-                        time.sleep(delay_s)
+                        continue
+                    for h in batch:
+                        k = _url_key(h.url)
+                        if k not in seen_keys:
+                            seen_keys.add(k)
+                            found.append(h)
                 if not found:
                     raise WebSearchError(
-                        "DuckDuckGo نتیجه‌ای نداد" + (f": {errors[0]}" if errors else ".")
+                        f"{label} نتیجه‌ای نداد" + (f": {errors[0]}" if errors else ".")
                     )
-            attempts.append({"backend": name, "ok": True, "hits": len(found)})
+            requests_used += sent
+            attempt = {"backend": name, "ok": True, "hits": len(found), "requests": sent}
+            if errors:
+                attempt["warnings"] = [e[:200] for e in errors]
+            attempts.append(attempt)
             hits = found
             used_backend = name
             break
         except (WebSearchError, httpx.HTTPError) as exc:
-            attempts.append({"backend": name, "ok": False, "error": str(exc)[:300]})
+            requests_used += sent
+            attempts.append({"backend": name, "ok": False, "requests": sent, "error": str(exc)[:300]})
             log(f"جستجو با {name} ناموفق: {str(exc)[:160]}")
 
     if not hits:
@@ -417,7 +590,7 @@ def web_research(
     uniq: list[SearchHit] = []
     seen: set[str] = set()
     for h in hits:
-        key = h.url.split("#")[0].rstrip("/")
+        key = _url_key(h.url)
         if key in seen:
             continue
         seen.add(key)
@@ -436,6 +609,8 @@ def web_research(
         "backend": used_backend,
         "attempts": attempts,
         "queries": queries,
+        "max_queries": budget,
+        "search_requests": requests_used,
         "gemini": gemini_meta,
         "sources": [h.to_dict() for h in uniq],
         "excerpt_count": sum(len(h.excerpts) for h in uniq),

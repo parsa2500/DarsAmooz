@@ -568,11 +568,18 @@ def analyze_topic_cmd(book_slug: str, chapter: int, llm_provider: str | None, ll
 @click.option("--chapter", type=int, required=True)
 @click.option(
     "--backend",
-    type=click.Choice(["auto", "gemini", "duckduckgo"], case_sensitive=False),
+    type=click.Choice(["auto", "google_cse", "duckduckgo", "gemini"], case_sensitive=False),
     default="auto",
     show_default=True,
+    help="auto = google_cse (if GOOGLE_CSE_API_KEY+GOOGLE_CSE_CX set) then duckduckgo; gemini only when chosen",
 )
 @click.option("--max-sources", type=int, default=8, show_default=True)
+@click.option(
+    "--max-queries",
+    type=int,
+    default=None,
+    help="Cap search requests for this run (default WEB_SEARCH_MAX_QUERIES or 6)",
+)
 @click.option("--no-fetch", is_flag=True, help="Do not open result pages (search snippets only)")
 @click.option(
     "--llm-only",
@@ -586,6 +593,7 @@ def mine_web_patterns_cmd(
     chapter: int,
     backend: str,
     max_sources: int,
+    max_queries: int | None,
     no_fetch: bool,
     llm_only: bool,
     llm_provider: str | None,
@@ -614,6 +622,7 @@ def mine_web_patterns_cmd(
             profile=profile,
             backend=backend.lower(),
             max_sources=max_sources,
+            max_queries=max_queries,
             llm_only=llm_only,
             fetch_pages=not no_fetch,
             on_log=lambda m: click.echo(f"  {m}"),
@@ -628,6 +637,7 @@ def mine_web_patterns_cmd(
         raise click.ClickException(str(exc)) from exc
     click.echo(
         f"status={pack['status']} backend={pack.get('search_backend')} "
+        f"requests={pack.get('search_requests')} "
         f"sources={pack.get('sources_count')} excerpts={pack.get('web_excerpt_count')} "
         f"patterns={len(pack.get('patterns') or [])}"
     )

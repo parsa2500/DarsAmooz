@@ -80,6 +80,7 @@ class AnalyzeBody(BaseModel):
 class MineBody(BaseModel):
     backend: str = "auto"
     max_sources: int = Field(8, ge=1, le=15)
+    max_queries: int | None = Field(default=None, ge=1, le=20)
     llm_only: bool = False
     fetch_pages: bool = True
     llm_provider: str | None = None
@@ -334,10 +335,15 @@ def create_app() -> FastAPI:
     def handout_state(slug: str, chapter: int) -> dict:
         from darsamooz.patterns import load_pattern_pack, load_web_sources
         from darsamooz.topic import load_topic_profile
+        from darsamooz.web_search import google_cse_configured, max_queries_per_run
 
         settings = _resolved_settings(root)
         _check_source(slug, chapter, settings)
         return {
+            "search": {
+                "google_cse_configured": google_cse_configured(),
+                "max_queries": max_queries_per_run(),
+            },
             "topic_profile": load_topic_profile(slug, chapter, settings),
             "web_sources": load_web_sources(slug, chapter, settings),
             "pattern_pack": load_pattern_pack(slug, chapter, settings),
@@ -393,6 +399,7 @@ def create_app() -> FastAPI:
                 profile=profile,
                 backend=payload.backend,
                 max_sources=payload.max_sources,
+                max_queries=payload.max_queries,
                 llm_only=payload.llm_only,
                 fetch_pages=payload.fetch_pages,
                 on_log=logs.append,

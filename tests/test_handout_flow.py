@@ -28,11 +28,13 @@ from darsamooz.sections import write_sections
 from darsamooz.topic import analyze_topic, load_topic_profile, update_topic_profile
 from darsamooz.web_search import (
     SearchHit,
+    SearchQuotaExceeded,
     SearchRateLimited,
     WebSearchError,
     extract_question_excerpts,
     html_to_lines,
     parse_duckduckgo_html,
+    search_google_cse,
     web_research,
 )
 
@@ -193,36 +195,155 @@ def test_extract_question_excerpts_finds_stem_and_options():
     assert "جیوه" in ex[0] and "کدام" in ex[0]
 
 
-def test_web_research_falls_back_gemini_to_duckduckgo(monkeypatch):
-    monkeypatch.setattr("darsamooz.web_search.provider_api_key", lambda name: "k")
+def _ddg_one(q, max_results=8):
+    return [SearchHit(url="https://a.ir/t", title="A", snippet="s", query=q, backend="duckduckgo")]
 
-    def gemini_fail(queries, **kw):
-        raise WebSearchError("Gemini google_search HTTP 429: quota")
 
-    def ddg(q, max_results=8):
-        return [SearchHit(url="https://a.ir/t", title="A", snippet="s", query=q, backend="duckduckgo")]
+def test_auto_tries_google_cse_then_duckduckgo_on_quota(monkeypatch):
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "test-key")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "test-cx")
+    cse_calls = []
+
+    def cse_quota(q, max_results=10, start=1):
+        cse_calls.append(q)
+        raise SearchQuotaExceeded("سهمیه Google Custom Search تمام شد (HTTP 429)")
 
     res = web_research(
         ["تست چگالی", "تست کنکور چگالی"],
         topic_line="فیزیک دهم",
-        gemini_search=gemini_fail,
-        ddg_search=ddg,
+        cse_search=cse_quota,
+        ddg_search=_ddg_one,
         page_fetcher=lambda url, client: ([WEB_EXCERPT], "ok"),
         delay_s=0,
     )
+    assert cse_calls == ["تست چگالی"]  # stops at the first quota error
     assert res["backend"] == "duckduckgo"
-    assert res["attempts"][0] == {
-        "backend": "gemini",
-        "ok": False,
-        "error": "Gemini google_search HTTP 429: quota",
-    }
+    assert res["attempts"][0]["backend"] == "google_cse"
+    assert res["attempts"][0]["ok"] is False and "سهمیه" in res["attempts"][0]["error"]
     assert res["attempts"][1]["ok"] is True
     assert len(res["sources"]) == 1  # deduped across queries
-    assert res["excerpt_count"] == 1
+    assert res["search_requests"] == 3  # 1 CSE + 2 DDG
+
+
+def test_auto_skips_gemini_and_cse_without_keys(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CSE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CSE_CX", raising=False)
+    monkeypatch.setattr("darsamooz.web_search.provider_api_key", lambda name: "gemini-key")
+
+    def boom(*a, **k):
+        raise AssertionError("must not be called in auto mode")
+
+    res = web_research(
+        ["q1"], topic_line="t", cse_search=boom, gemini_search=boom,
+        ddg_search=_ddg_one, fetch_pages=False, delay_s=0,
+    )
+    assert [a["backend"] for a in res["attempts"]] == ["duckduckgo"]
+
+
+def test_google_cse_results_and_query_budget(monkeypatch):
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "cx")
+    calls = []
+
+    def cse(q, max_results=10, start=1):
+        calls.append((q, start))
+        n = len(calls)
+        return [
+            SearchHit(url=f"https://site{n}.ir/a", title="t", query=q, backend="google_cse"),
+            SearchHit(url=f"https://site{n}.ir/b", title="t", query=q, backend="google_cse"),
+        ]
+
+    res = web_research(
+        ["q1", "q2"], topic_line="t", backend="google_cse", max_sources=50,
+        max_queries=3, cse_search=cse, fetch_pages=False,
+    )
+    # 2 queries + page 2 of q1, then the cap (3) is reached
+    assert calls == [("q1", 1), ("q2", 1), ("q1", 11)]
+    assert res["backend"] == "google_cse" and res["search_requests"] == 3
+    assert len(res["sources"]) == 6
+    assert all(s["backend"] == "google_cse" for s in res["sources"])
+
+
+def test_max_queries_env_default(monkeypatch):
+    from darsamooz.web_search import max_queries_per_run
+
+    monkeypatch.delenv("WEB_SEARCH_MAX_QUERIES", raising=False)
+    assert max_queries_per_run() == 6
+    monkeypatch.setenv("WEB_SEARCH_MAX_QUERIES", "4")
+    assert max_queries_per_run() == 4
+
+
+def _mock_client(handler):
+    import httpx
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_search_google_cse_request_and_parse(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "k-123")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "cx-456")
+    monkeypatch.delenv("GOOGLE_CSE_LR", raising=False)
+    monkeypatch.delenv("GOOGLE_CSE_GL", raising=False)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        seen["host"] = request.url.host
+        return httpx.Response(200, json={"items": [
+            {"link": "https://gama.ir/exams/1", "title": "گاما", "snippet": "تست   فیزیک\nدهم"},
+            {"link": "ftp://bad", "title": "x"},
+        ]})
+
+    hits = search_google_cse("تست فیزیک دهم", start=11, client=_mock_client(handler))
+    assert seen["host"] == "www.googleapis.com"
+    assert seen["key"] == "k-123" and seen["cx"] == "cx-456"
+    assert seen["q"] == "تست فیزیک دهم" and seen["start"] == "11" and seen["num"] == "10"
+    assert seen["lr"] == "lang_fa" and seen["gl"] == "ir"
+    assert [h.url for h in hits] == ["https://gama.ir/exams/1"]
+    assert hits[0].backend == "google_cse" and hits[0].snippet == "تست فیزیک دهم"
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "quota"),
+    [
+        (429, {"error": {"code": 429, "message": "Quota exceeded for quota metric 'Queries'", "status": "RESOURCE_EXHAUSTED"}}, True),
+        (403, {"error": {"code": 403, "message": "Daily Limit Exceeded", "errors": [{"reason": "dailyLimitExceeded"}]}}, True),
+        (403, {"error": {"code": 403, "message": "Custom Search API has not been used in project 1 before or it is disabled.", "errors": [{"reason": "accessNotConfigured"}]}}, False),
+        (400, {"error": {"code": 400, "message": "API key not valid.", "errors": [{"reason": "badRequest"}]}}, False),
+    ],
+)
+def test_search_google_cse_errors(monkeypatch, status, payload, quota):
+    import httpx
+
+    monkeypatch.setenv("GOOGLE_CSE_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_CSE_CX", "cx")
+    client = _mock_client(lambda r: httpx.Response(status, json=payload))
+    with pytest.raises(WebSearchError) as ei:
+        search_google_cse("q", client=client)
+    assert isinstance(ei.value, SearchQuotaExceeded) is quota
+    if status == 403 and not quota:
+        assert "فعال نیست" in str(ei.value)
+
+
+def test_search_google_cse_requires_keys(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CSE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CSE_CX", raising=False)
+    with pytest.raises(WebSearchError, match="GOOGLE_CSE"):
+        search_google_cse("q")
+
+
+def test_explicit_gemini_backend_still_optional(monkeypatch):
+    def gemini_ok(queries, **kw):
+        return [SearchHit(url="https://g.ir/x", backend="gemini")], {"summary": "s"}
+
+    res = web_research(["q"], topic_line="t", backend="gemini", gemini_search=gemini_ok, fetch_pages=False)
+    assert res["backend"] == "gemini" and res["sources"][0]["url"] == "https://g.ir/x"
 
 
 def test_web_research_raises_when_nothing_found(monkeypatch):
-    monkeypatch.setattr("darsamooz.web_search.provider_api_key", lambda name: None)
+    monkeypatch.delenv("GOOGLE_CSE_API_KEY", raising=False)
 
     def ddg_empty(q, max_results=8):
         raise WebSearchError("DuckDuckGo HTTP 503")
@@ -426,7 +547,9 @@ def api_client(tmp_path, monkeypatch):
 def test_api_handout_flow(api_client):
     c, monkeypatch = api_client
     base = f"/api/handout/{SLUG}/1"
-    assert c.get(base).json() == {"topic_profile": None, "web_sources": None, "pattern_pack": None}
+    state = c.get(base).json()
+    assert (state["topic_profile"], state["web_sources"], state["pattern_pack"]) == (None, None, None)
+    assert set(state["search"]) == {"google_cse_configured", "max_queries"}
 
     r = c.post(f"{base}/analyze", json={})
     assert r.status_code == 200, r.text
@@ -495,7 +618,7 @@ def test_cli_mine_web_patterns_failure_message(tmp_path, monkeypatch):
 
 
 def test_duckduckgo_rate_limit_stops_after_first_query(monkeypatch):
-    monkeypatch.setattr("darsamooz.web_search.provider_api_key", lambda name: None)
+    monkeypatch.delenv("GOOGLE_CSE_API_KEY", raising=False)
     calls = []
 
     def blocked(q, max_results=8):

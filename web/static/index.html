@@ -190,12 +190,13 @@
           <h3>۲. جستجوی تست‌های واقعی در وب</h3>
           <span class="badge" id="web-badge">جستجو نشده</span>
           <select id="web-backend" aria-label="روش جستجو">
-            <option value="auto">خودکار (Gemini ← DuckDuckGo)</option>
+            <option value="auto">خودکار (Google ← DuckDuckGo)</option>
+            <option value="google_cse">Google Programmable Search</option>
             <option value="duckduckgo">DuckDuckGo (بدون کلید)</option>
-            <option value="gemini">Gemini google_search</option>
           </select>
           <button type="button" class="btn btn-small" id="btn-mine" disabled>جستجو و استخراج الگو</button>
         </div>
+        <p class="hint" id="search-hint"></p>
         <div id="web-error" class="web-error hidden" role="alert">
           <p id="web-error-text"></p>
           <p class="hint">هیچ منبعی ساختگی ثبت نشد. می‌توانید دوباره تلاش کنید یا بدون وب ادامه دهید (الگوها فقط از دانش مدل و با برچسب «بدون وب»).</p>
@@ -244,6 +245,6 @@
     </footer>
   </div>
   <script src="/static/app.js?v=handout1" defer></script>
-  <script src="/static/handout.js?v=handout1" defer></script>
+  <script src="/static/handout.js?v=handout2" defer></script>
 </body>
 </html>

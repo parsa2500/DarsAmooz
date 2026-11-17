@@ -226,6 +226,7 @@ def mine_web_patterns(
     profile: dict[str, Any] | None = None,
     backend: str = "auto",
     max_sources: int = 8,
+    max_queries: int | None = None,
     llm_only: bool = False,
     fetch_pages: bool = True,
     on_log: Callable[[str], None] | None = None,
@@ -275,6 +276,7 @@ def mine_web_patterns(
                 topic_line=topic_line(profile),
                 backend=backend,
                 max_sources=max_sources,
+                max_queries=max_queries,
                 fetch_pages=fetch_pages,
                 on_log=log,
             )
@@ -310,6 +312,7 @@ def mine_web_patterns(
         "search_backend": research.get("backend"),
         "search_attempts": research.get("attempts") or [],
         "search_queries": research.get("queries") or [],
+        "search_requests": research.get("search_requests"),
         "sources": [
             {"title": s.get("title"), "url": s.get("url")}
             for s in research.get("sources") or []

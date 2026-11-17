@@ -120,7 +120,9 @@
       return;
     }
     const list = ws.sources || [];
-    els.webBadge.textContent = `${list.length} منبع · ${ws.excerpt_count || 0} نمونه تست · ${ws.backend || "?"}`;
+    els.webBadge.textContent =
+      `${list.length} منبع · ${ws.excerpt_count || 0} نمونه تست · ${ws.backend || "?"}` +
+      (ws.search_requests ? ` · ${ws.search_requests} جستجو` : "");
     els.webBadge.className = "badge ok";
     list.forEach((s) => {
       const li = document.createElement("li");
@@ -207,6 +209,13 @@
     try {
       const data = await api(base());
       state = { topic: data.topic_profile, sources: data.web_sources, pack: data.pattern_pack };
+      const sh = $("search-hint");
+      if (sh && data.search) {
+        sh.textContent = data.search.google_cse_configured
+          ? `Google Programmable Search فعال است · سقف ${data.search.max_queries} جستجو در هر اجرا (سهمیه رایگان: ۱۰۰ جستجو در روز)`
+          : `کلید Google تنظیم نشده (GOOGLE_CSE_API_KEY و GOOGLE_CSE_CX در .env) — فعلاً فقط DuckDuckGo · سقف ${data.search.max_queries} جستجو در هر اجرا`;
+        sh.className = "hint " + (data.search.google_cse_configured ? "ok" : "warn");
+      }
     } catch (err) {
       state = { topic: null, sources: null, pack: null };
       say(err.message, "warn");
