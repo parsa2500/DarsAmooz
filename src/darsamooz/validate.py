@@ -33,12 +33,25 @@ def normalize_fa(text: str) -> str:
     return s
 
 
+_FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+_QUOTE_PUNCT = re.compile(r"[^\w\u0600-\u06FF]+", re.UNICODE)
+
+
+def _quote_norm(text: str) -> str:
+    """Quote-matching form: Persian digits → ASCII, punctuation/spacing ignored, and the
+    pdftotext lam-alef artefact («میالدی» for «میلادی») folded on both sides."""
+    s = normalize_fa(text).translate(_FA_DIGITS).replace("لا", "ال")
+    s = re.sub(r"[،؛؟«»٬٫]", " ", s)
+    s = _QUOTE_PUNCT.sub(" ", s)
+    return " ".join(s.split())
+
+
 def quote_in_source(quote: str, unit_text: str, *, min_len: int = 12) -> bool:
     """True if normalized quote is a substring of normalized unit text."""
-    q = normalize_fa(quote)
+    q = _quote_norm(quote)
     if len(q) < min_len:
         return False
-    src = normalize_fa(unit_text)
+    src = _quote_norm(unit_text)
     if not src:
         return False
     if q in src:

@@ -105,6 +105,7 @@ PATTERN_JSON = {
             "numeric": True,
             "difficulty": "medium",
             "traps": ["گرم و کیلوگرم"],
+            "section": "چگالی",
             "evidence": [1, 9],
         },
         {
@@ -116,6 +117,7 @@ PATTERN_JSON = {
             "numeric": False,
             "difficulty": "easy",
             "traps": [],
+            "section": "چگالی",
             "evidence": [],
         },
     ],
@@ -126,8 +128,9 @@ PATTERN_JSON = {
 class ScriptedProvider:
     """Returns topic / pattern / generation JSON based on the system prompt."""
 
-    def __init__(self, questions: list[dict] | None = None):
+    def __init__(self, questions: list[dict] | None = None, review: dict | None = None):
         self.questions = questions or []
+        self.review = review
         self.calls: list[str] = []
         self.last_call = {"provider": "fake", "model": "fake-1"}
         self.last_usage = None
@@ -139,6 +142,14 @@ class ScriptedProvider:
             return dict(TOPIC_JSON)
         if "extract reusable *patterns*" in system:
             return json.loads(json.dumps(PATTERN_JSON))
+        if "audit whether exam-question patterns" in system:
+            ids = [ln.split(":", 1)[0] for ln in user.splitlines() if ln[:1] == "p" and ":" in ln]
+            return {"patterns": [{"id": i, "on_chapter": True, "section": "چگالی", "reason": "ok"} for i in ids]}
+        if "review ONE generated Iranian MCQ" in system:
+            return dict(self.review) if self.review is not None else {
+                "fluent_persian": True, "garbled_terms": [], "trivial_recall": False,
+                "pattern_fits": True, "best_pattern_id": None, "reason": "ok",
+            }
         return {"questions": self.questions}
 
 
@@ -547,8 +558,11 @@ def test_mine_web_patterns_success_maps_evidence(tmp_path):
     assert pack["patterns"][0]["evidence_urls"] == ["https://example.ir/physics10-tests"]
     assert load_pattern_pack(SLUG, 1, settings)["status"] == "web"
     assert load_web_sources(SLUG, 1, settings)["sources"][0]["excerpts"] == [WEB_EXCERPT]
-    # the web excerpt was given to the pattern extractor as evidence
-    assert "۵۴۰ گرم" in prov.calls[-1]
+    # the web excerpt was given to the pattern extractor as evidence (last call = scope audit)
+    assert "۵۴۰ گرم" in prov.calls[-2]
+    assert "audit" not in prov.calls[-2]
+    assert pack["scope_audit"]["ok"] is True
+    assert pack["dropped_patterns"] == []
 
 
 def test_mine_web_patterns_failure_is_visible_then_llm_only(tmp_path):
@@ -650,17 +664,21 @@ def test_generate_with_pattern_pack_rejects_web_copies(tmp_path):
     )
     assert len(result.questions) == 1
     q = result.questions[0]
-    assert "web_pattern:p1" in q.tags
+    # round 1 (numeric p1): the web copy is rejected, the conceptual item is a pattern_mismatch;
+    # round 2 (conceptual p2) accepts it.
+    assert "web_pattern:p2" in q.tags
     m = result.metrics
+    assert m["quality_rejected"] == {"pattern_mismatch": 1}
+    assert m["quality_reviews"] == 1
     assert m["pattern_pack_used"] is True
     assert m["pattern_pack_status"] == "web"
-    assert m["web_dup_rejected"] == 1
+    assert m["web_dup_rejected"] == 2  # the copy comes back in both rounds
     assert m["web_sources_count"] == 1
     assert m["patterns_count"] == 2
     # the per-round prompt carried the abstract pattern, not the web question
-    gen_prompt = prov.calls[-1]
-    assert "الگوی هدف (p1)" in gen_prompt
-    assert "۵۴۰" not in gen_prompt
+    gen_prompts = [c for c in prov.calls if "--- یونیت ---" in c]
+    assert "الگوی هدف (p1)" in gen_prompts[0]
+    assert all("۵۴۰" not in c for c in gen_prompts)
     root = result.run.root
     for name in ("pattern_pack.json", "web_sources.json", "topic_profile.json"):
         assert (root / name).is_file(), name

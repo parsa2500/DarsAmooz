@@ -38,6 +38,9 @@ Rules:
 - pattern MUST match: tarifi=تعریفی, mafhumi=مفهومی, halli=حلی/numeric, tarkibi=ترکیبی
 - halli items MUST include numbers/calculation grounded in the unit
 - if a web style-pack / pattern block is present, use it ONLY for stem/option structure and trap style — never copy or paraphrase web questions, facts or numbers; all truth stays in the unit text
+- no trivial recall: never ask a heading or one-line definition back (bad: «فیزیک به معنای چه است؟»); every item must need understanding, comparison or calculation
+- write natural, correct Persian; never transliterate or invent words (bad: «اسکاپی‌التور»); keep the book's own terms
+- when a target web pattern is given, the question MUST really follow its skeleton and numeric/conceptual type
 """
 
 
@@ -122,21 +125,74 @@ def _build_unit_prompt(
     )
 
 
+def _pick_pattern_for_unit(
+    sec: Section,
+    patterns: list[dict[str, Any]],
+    scope: Any,
+    usage: dict[str, int],
+    round_no: int,
+) -> dict[str, Any]:
+    """Prefer a web pattern mapped to this unit's chapter section (least tried first).
+
+    ``usage`` counts how often each pattern was targeted (updated here), so a pattern
+    whose round produced only rejects is not retried before its siblings.
+
+    Units whose section has no pattern (or untitled pdftotext fragments) cycle through
+    all patterns as before.
+    """
+    title = scope.match_section(sec.title or "") if scope is not None else None
+    same = [p for p in patterns if title and p.get("section") == title]
+    if same:
+        pick = min(same, key=lambda p: (usage.get(str(p.get("id")), 0), same.index(p)))
+    else:
+        pick = patterns[(round_no - 1) % len(patterns)]
+    usage[str(pick.get("id"))] = usage.get(str(pick.get("id")), 0) + 1
+    return pick
+
+
+def _spread_order(n: int) -> list[int]:
+    """0..n-1 ordered so each next index is as far as possible from those already taken
+    (0, n-1, middle, quarters, …). Keeps small runs from only touching the intro units."""
+    if n <= 0:
+        return []
+    order = [0]
+    chosen = {0}
+    while len(order) < n:
+        best = max(
+            (i for i in range(n) if i not in chosen),
+            key=lambda i: (min(abs(i - c) for c in chosen), -i),
+        )
+        order.append(best)
+        chosen.add(best)
+    return order
+
+
 def plan_unit_schedule(sections: list[Section], count: int) -> list[tuple[Section, int]]:
-    """Round-robin units; each visit asks for up to BATCH_PER_UNIT questions."""
+    """Spread visits over the whole chapter; each visit asks for up to BATCH_PER_UNIT.
+
+    The first visits cover ``count`` questions on units spread across the chapter; the
+    remaining usable units are appended as spare visits for rounds whose items get
+    rejected, so retries move to new text instead of re-asking the same unit.
+    """
     usable = [s for s in sections if len((s.text or "").strip()) >= 80]
     if not usable:
         return []
+    order = [usable[i] for i in _spread_order(len(usable))]
     schedule: list[tuple[Section, int]] = []
     remaining = count
     idx = 0
     max_slots = max(count * 2, len(usable) * 2)
     while remaining > 0 and len(schedule) < max_slots:
-        sec = usable[idx % len(usable)]
+        sec = order[idx % len(order)]
         batch = min(BATCH_PER_UNIT, remaining)
         schedule.append((sec, batch))
         remaining -= batch
         idx += 1
+    visited = {s.id for s, _ in schedule}
+    for sec in order:
+        if sec.id not in visited:
+            schedule.append((sec, BATCH_PER_UNIT))
+            visited.add(sec.id)
     return schedule
 
 
@@ -206,6 +262,7 @@ def generate_from_chapter_with_run(
     style_mine: bool = False,
     on_log: Any | None = None,
     pattern_pack: Any = None,
+    quality_review: bool = True,
 ) -> GenerationResult:
     settings = settings or get_settings()
     sections = load_sections(book_slug, chapter_num, settings)
@@ -235,6 +292,9 @@ def generate_from_chapter_with_run(
         pattern_norm = parse_pattern_mix(pattern_mix)
 
     title = _chapter_title(chapter_num, book_slug, settings)
+    from darsamooz.chapter_scope import build_scope
+
+    scope = build_scope(sections, chapter_num=chapter_num, chapter_title=title)
     schedule = plan_unit_schedule(sections, count)
     if not schedule:
         raise RuntimeError(f"Chapter {chapter_num} has no usable section text.")
@@ -331,6 +391,13 @@ def generate_from_chapter_with_run(
         if style_block:
             # Pattern pack supersedes the older style pack; avoid conflicting blocks.
             style_block = ""
+        # Visit units whose chapter section has a mapped web pattern first (stable order).
+        pat_sections = {p.get("section") for p in pp_patterns if p.get("section")}
+        if pat_sections:
+            schedule = sorted(
+                schedule,
+                key=lambda item: 0 if scope.match_section(item[0].title or "") in pat_sections else 1,
+            )
 
     run = RunWriter.create(
         chapter_num,
@@ -378,8 +445,15 @@ def generate_from_chapter_with_run(
     section_for_qid: dict[str, str] = {}
     web_dup_rejected = 0
     pattern_use: dict[str, int] = {}
+    pattern_attempts: dict[str, int] = {}
+    quality_rejected: dict[str, int] = {}
+    pattern_retagged = 0
+    quality_unchecked = 0
+    quality_reviews = 0
 
-    max_rounds = max(len(schedule) * 2, count * 2)
+    # The schedule now carries spare units for retries, so cap by the request size;
+    # x3 leaves room for the stricter quality gate.
+    max_rounds = max(count * 3, 2)
 
     for i in range(max_rounds):
         if len(questions) >= count:
@@ -400,7 +474,7 @@ def generate_from_chapter_with_run(
         if pp_patterns:
             from darsamooz.patterns import format_pattern_for_prompt
 
-            web_pat = pp_patterns[(rounds - 1) % len(pp_patterns)]
+            web_pat = _pick_pattern_for_unit(sec, pp_patterns, scope, pattern_attempts, rounds)
             round_block = format_pattern_for_prompt(pp_pack, web_pat)
             if pattern_norm is None:
                 try:
@@ -527,9 +601,56 @@ def generate_from_chapter_with_run(
                     }
                 )
                 continue
-            if web_pat is not None:
-                q.tags = [*(q.tags or []), f"web_pattern:{web_pat.get('id')}"]
-                pattern_use[str(web_pat.get("id"))] = pattern_use.get(str(web_pat.get("id")), 0) + 1
+            from darsamooz.quality import deterministic_reject, llm_review
+
+            det = deterministic_reject(q, scope, web_pat)
+            if det is not None:
+                code, detail = det
+                rejected += 1
+                quality_rejected[code] = quality_rejected.get(code, 0) + 1
+                run.append_item(
+                    {"status": "rejected", "reason": code, "detail": detail,
+                     "section_id": sec.id, "stem": q.stem[:160]}
+                )
+                if callable(on_log):
+                    on_log(f"رد شد ({code}): {q.stem[:70]} — {detail}")
+                continue
+            final_pat = web_pat
+            quality_note: dict[str, Any] | None = None
+            if web_pat is not None and quality_review:
+                quality_reviews += 1
+                decision = llm_review(
+                    q, sec.text, target=web_pat, patterns=pp_patterns, scope=scope, provider=provider
+                )
+                if decision["action"] == "reject":
+                    rejected += 1
+                    quality_rejected[decision["code"]] = quality_rejected.get(decision["code"], 0) + 1
+                    run.append_item(
+                        {"status": "rejected", "reason": decision["code"], "detail": decision["detail"],
+                         "section_id": sec.id, "stem": q.stem[:160]}
+                    )
+                    if callable(on_log):
+                        on_log(f"رد شد ({decision['code']}): {q.stem[:70]} — {decision['detail']}")
+                    continue
+                if decision["action"] == "retag":
+                    pattern_retagged += 1
+                    final_pat = next(
+                        (p for p in pp_patterns if str(p.get("id")) == decision["pattern_id"]), web_pat
+                    )
+                    q.tags = [*(q.tags or []), "web_pattern_retagged"]
+                    quality_note = {"pattern_retagged": decision["detail"]}
+                elif decision["action"] == "unchecked":
+                    quality_unchecked += 1
+                    from darsamooz.models import ReviewStatus
+
+                    q.tags = [*(q.tags or []), "quality_unchecked"]
+                    q.review_status = ReviewStatus.needs_review
+                    quality_note = {"quality_unchecked": f"{decision['code']}: {decision['detail']}"}
+                    if callable(on_log):
+                        on_log(f"هشدار: بررسی کیفیت انجام نشد ({decision['code']}); سؤال برای بازبینی علامت خورد.")
+            if final_pat is not None:
+                q.tags = [*(q.tags or []), f"web_pattern:{final_pat.get('id')}"]
+                pattern_use[str(final_pat.get("id"))] = pattern_use.get(str(final_pat.get("id")), 0) + 1
             questions.append(q)
             accepted_stems.append(q.stem)
             section_for_qid[q.id] = sec.id
@@ -544,8 +665,10 @@ def generate_from_chapter_with_run(
             }
             if claimed_hard and q.difficulty != Difficulty.hard:
                 acc_item["hard_downgraded"] = True
-            if web_pat is not None:
-                acc_item["web_pattern_id"] = web_pat.get("id")
+            if final_pat is not None:
+                acc_item["web_pattern_id"] = final_pat.get("id")
+            if quality_note:
+                acc_item.update(quality_note)
             acc_item.update(llm_fields)
             run.append_item(acc_item)
             if len(questions) >= count:
@@ -626,6 +749,10 @@ def generate_from_chapter_with_run(
         if pp_pack is not None
         else None,
         "web_dup_rejected": web_dup_rejected if pp_pack is not None else None,
+        "quality_rejected": quality_rejected,
+        "quality_reviews": quality_reviews,
+        "pattern_retagged": pattern_retagged,
+        "quality_unchecked": quality_unchecked,
         "hard_downgraded_count": sum(
             1 for q in questions if "hard_downgraded" in (q.tags or [])
         ),
@@ -649,6 +776,14 @@ def generate_from_chapter_with_run(
 
     if len(questions) < count:
         detail = f" last_error={last_error}" if last_error else ""
+        if questions:
+            # Keep what was accepted so a short run is not lost (still reported as a failure).
+            partial = run.root / "partial_questions.json"
+            partial.write_text(
+                json.dumps([q.model_dump(mode="json") for q in questions], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            detail += f" partial={partial}"
         raise RuntimeError(
             f"Only generated {len(questions)}/{count} valid book-grounded questions "
             f"for chapter {chapter_num} after {rounds} rounds "

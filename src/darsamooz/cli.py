@@ -145,6 +145,12 @@ def ingest_cmd(pdf: Path, slug: str) -> None:
     default=None,
     help="Use a web pattern pack: 'auto' = stored pack for --slug/--chapter, or a path to pattern_pack.json",
 )
+@click.option(
+    "--quality-review/--no-quality-review",
+    default=True,
+    show_default=True,
+    help="With a pattern pack: LLM check for fluent Persian, trivial recall and pattern fit before accepting",
+)
 def generate_cmd(
     chapter: int,
     count: int,
@@ -160,6 +166,7 @@ def generate_cmd(
     llm_model: str | None,
     book_slug: str,
     pattern_pack: str | None,
+    quality_review: bool,
 ) -> None:
     """Generate multiple-choice questions for a chapter."""
     from darsamooz.ingest import export_prefix_for
@@ -217,6 +224,7 @@ def generate_cmd(
                 llm_model=llm_model,
                 book_slug=book_slug,
                 pattern_pack=pattern_pack,
+                quality_review=quality_review,
                 on_log=lambda m: click.echo(f"  {m}"),
             )
         except (RuntimeError, FileNotFoundError, ValueError) as exc:
@@ -245,6 +253,13 @@ def generate_cmd(
                 f"usage={metrics.get('pattern_usage')} "
                 f"web_dup_rejected={metrics.get('web_dup_rejected')}"
             )
+        click.echo(
+            "quality: "
+            f"rejected={metrics.get('quality_rejected')} "
+            f"reviews={metrics.get('quality_reviews')} "
+            f"retagged={metrics.get('pattern_retagged')} "
+            f"unchecked={metrics.get('quality_unchecked')}"
+        )
         paths = persist_generation(
             result, prefix=prefix, settings=settings, approved_only=approved_only
         )
@@ -641,10 +656,22 @@ def mine_web_patterns_cmd(
         f"sources={pack.get('sources_count')} excerpts={pack.get('web_excerpt_count')} "
         f"patterns={len(pack.get('patterns') or [])}"
     )
+    for q in pack.get("search_queries") or []:
+        click.echo(f"  query: {q}")
+    for d in pack.get("dropped_queries") or []:
+        click.echo(f"  dropped query: {d.get('query')} — {d.get('reason')}")
     for s in (pack.get("sources") or [])[:8]:
         click.echo(f"  source: {s.get('url')}")
     for p in pack.get("patterns") or []:
-        click.echo(f"  {p['id']} [{p['question_type']}/{p['difficulty']}] {p['name_fa']}")
+        click.echo(
+            f"  {p['id']} [{p['question_type']}/{p['difficulty']}] {p['name_fa']}"
+            + (f" — بخش: {p['section']}" if p.get("section") else "")
+        )
+    for d in pack.get("dropped_patterns") or []:
+        click.echo(f"  dropped pattern: {d.get('name_fa')} — {d.get('reason')}")
+    audit = pack.get("scope_audit") or {}
+    if audit and not audit.get("ok"):
+        click.echo(f"  WARNING scope audit failed: {audit.get('error')}")
     click.echo(f"pack: {pattern_pack_path(book_slug, chapter, settings)}")
     click.echo(f"sources: {web_sources_path(book_slug, chapter, settings)}")
 

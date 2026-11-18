@@ -41,7 +41,7 @@ python scripts/download_physics10.py
 ```bash
 cp .env.example .env
 # در .env: LLM_PROVIDER و کلید/مدل مربوطه را بگذارید (پیش‌فرض: openrouter)
-# OpenRouter: OPENROUTER_API_KEY + OPENROUTER_MODEL=… (مثلاً google/gemma-4-31b-it:free)
+# OpenRouter: OPENROUTER_API_KEY + OPENROUTER_MODEL=… (مثلاً nvidia/nemotron-3-ultra-550b-a55b:free)
 # پیش‌فرض: همه فراخوانی‌های مدل فقط به OpenRouter (LLM_FALLBACK_PROVIDER خالی). fallback اختیاری: LLM_FALLBACK_PROVIDER=gemini
 #   (لاگ هشدار + ثبت در metrics.json و وضعیت جاب UI؛ هرگز .env را commit نکنید)
 # جایگزین: LLM_PROVIDER=gemini + GEMINI_API_KEY + GEMINI_MODEL=gemini-3.6-flash
@@ -100,6 +100,8 @@ darsamooz db-sync
    - اگر جستجو هیچ منبعی پیدا نکند، خطا در UI/CLI نشان داده می‌شود و هیچ منبع ساختگی ثبت نمی‌شود. کاربر می‌تواند «ادامه بدون وب» را انتخاب کند؛ آن بسته با `status=llm_only` و صفر منبع علامت می‌خورد.
 3. **استخراج الگو:** مدل از روی نمونه‌ها فقط *الگو* درمی‌آورد: اسکلت صورت سؤال، نوع (تعریفی/مفهومی/حلی/ترکیبی)، عددی یا مفهومی، سختی، شکل گزینه‌ها، روش ساخت گزینه‌های غلط و دام‌ها (`pattern_pack.json`، قابل ویرایش/غیرفعال‌سازی در UI).
 4. **تولید:** هر دور یک الگو را هدف می‌گیرد و محتوا فقط از متن جزوه می‌آید (نقل‌قول منبع همچنان چک می‌شود). هر صورت سؤال با تست‌های خوانده‌شده از وب مقایسه می‌شود و اگر بیش از ۶۰٪ شبیه باشد با دلیل `web_near_duplicate` رد می‌شود. بازبینی، تأیید دوم، پخش جواب‌ها و خروجی مثل قبل است.
+5. **ماندن در فصل:** کوئری‌های جستجو از عنوان بخش‌های واقعی فصل (از متن کتاب) ساخته می‌شوند. کوئری‌هایی که واژه‌ی ناموجود در کتاب دارند (`term_not_in_book`) یا به هیچ بخشی از فصل نمی‌خورند (`off_chapter`) حذف و در خروجی اعلام می‌شوند. هر الگو باید به یک بخش فصل نسبت داده شود و یک بررسی جداگانه‌ی مدل، الگوهای خارج از فصل را حذف می‌کند (`dropped_patterns`). اگر این بررسی خطا بدهد، با هشدار اعلام می‌شود.
+6. **فیلتر کیفیت:** سؤال حفظی و تعریفی یک‌خطی (`trivial_recall`)، فارسی خراب یا واژه‌ی ساختگی ناموجود در کتاب (`garbled_text`) و ناهماهنگی با الگو (`pattern_mismatch`) رد می‌شوند. اگر سؤال با الگوی دیگری جور باشد، برچسبش اصلاح می‌شود (`web_pattern_retagged`). اگر بررسی کیفیت انجام نشود، سؤال با برچسب `quality_unchecked` برای بازبینی علامت می‌خورد.
 
 ```bash
 darsamooz ingest-doc --pdf jozve.pdf                 # یا آپلود در UI
@@ -156,6 +158,8 @@ When a handout/PDF is uploaded:
    - If no source is found the failure is shown in UI/CLI/metrics and nothing is invented. The user may choose "continue without web"; that pack is marked `status=llm_only` with zero sources.
 3. **Pattern extraction** — the LLM turns the excerpts into structure-only patterns: stem skeleton, type (tarifi/mafhumi/halli/tarkibi), numeric vs conceptual, difficulty, option format, distractor strategies, traps (`pattern_pack.json`, editable / per-pattern enable in the UI).
 4. **Generation** — each round targets one pattern; facts come only from the handout (source-quote grounding still enforced). Every stem is compared against fetched web questions (5-char shingle containment ≥ 0.6 → rejected as `web_near_duplicate`). Review/verify/balance/export unchanged.
+5. **Chapter scope** — search queries are built from the chapter's real section titles (book text). LLM queries using words absent from the book (`term_not_in_book`) or matching no section (`off_chapter`) are dropped and reported. Every pattern must map to a chapter section; an LLM scope audit drops off-chapter patterns (`dropped_patterns`). A failed audit is reported, never treated as a pass.
+6. **Quality gate** — rejects one-line definition/heading recall (`trivial_recall`), broken/transliterated Persian not in the book (`garbled_text`) and questions that do not fit their web pattern (`pattern_mismatch`; retagged when another pattern fits). If the LLM review fails, the question is tagged `quality_unchecked` + needs_review. Disable with `--no-quality-review`.
 
 CLI: `ingest-doc`, `analyze-topic`, `mine-web-patterns [--backend] [--max-queries] [--llm-only] [--no-fetch]`, `generate --slug … --pattern-pack auto|PATH`.
 Metrics: `pattern_pack_status`, `web_sources_count`, `patterns_count`, `pattern_usage`, `search_backend`, `search_error`, `web_dup_rejected`.
@@ -171,7 +175,7 @@ See `.env.example`. Default provider is **openrouter**. Select with `LLM_PROVIDE
 
 **OpenRouter**
 - `OPENROUTER_API_KEY` — local `.env` only
-- `OPENROUTER_MODEL` — exact model id (required). Free models end with `:free` (e.g. `google/gemma-4-31b-it:free`)
+- `OPENROUTER_MODEL` — exact model id (required). Free models end with `:free` (e.g. `nvidia/nemotron-3-ultra-550b-a55b:free`). `VERIFY_MODEL` optionally sets a separate model for answer verification
 - `OPENROUTER_BASE_URL` — defaults to `https://openrouter.ai/api/v1`
 - `LLM_FALLBACK_PROVIDER` — empty by default (OpenRouter only). Set `gemini` for an optional visible fallback.
 

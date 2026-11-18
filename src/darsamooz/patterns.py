@@ -37,6 +37,7 @@ Return ONLY JSON:
       "numeric": true,
       "difficulty": "easy|medium|hard",
       "traps": ["common traps"],
+      "section": "the chapter section (copy one title from the given section list) this pattern tests",
       "evidence": [1, 3]
     }
   ],
@@ -49,6 +50,24 @@ Rules:
 - NEVER copy a real question stem, number set, or option list. Abstract skeletons only.
 - evidence = numbers of the [n] sources that show the pattern (empty if none).
 - Persian text for names/templates/notes.
+- ONLY patterns whose core skill is taught in the given chapter sections. If a web question
+  tests another chapter/grade (e.g. Newton's laws / F=ma computations in a measurement
+  chapter), do NOT turn it into a pattern.
+- section MUST be copied from the given section list.
+"""
+
+SCOPE_AUDIT_SYSTEM = """You audit whether exam-question patterns belong to ONE Iranian textbook chapter.
+You get the chapter title, its section titles, a short outline of each section from the book,
+and candidate patterns. Return ONLY JSON:
+{"patterns":[{"id":"p1","on_chapter":true,"section":"exact title from the section list","reason":"short Persian"}]}
+Rules:
+- Each pattern comes with book sentences that share its words. Judge from them and the outline.
+- on_chapter=true when the pattern's core skill is taught in these sections (book sentences
+  explain or practise it).
+- on_chapter=false when the skill belongs to another chapter or grade, even if a word or formula
+  is mentioned in passing (e.g. computing acceleration/weight with F=ma in a chapter where F=ma
+  only appears as an example of units), or when no book sentence supports it.
+- section must be copied exactly from the list (empty if on_chapter=false).
 """
 
 LLM_ONLY_NOTE = (
@@ -152,6 +171,7 @@ def normalize_pattern_pack(
                 "difficulty": diff,
                 "traps": _str_list(item.get("traps"), 5),
                 "evidence_urls": evidence_urls[:5],
+                "section": str(item.get("section") or "").strip()[:160],
                 "enabled": item.get("enabled", True) is not False,
             }
         )
@@ -185,14 +205,33 @@ def _evidence_blob(research: dict[str, Any], *, max_chars: int = 9000) -> str:
     return blob[:max_chars]
 
 
+def _scope_block(scope: Any) -> str:
+    if scope is None:
+        return ""
+    lines = [f"فصل {scope.chapter_num}: {scope.chapter_title}", "بخش‌های این فصل در کتاب:"]
+    lines += [f"- {t}" for t in scope.section_titles]
+    return "\n".join(lines) + "\n"
+
+
+def _context_lines(profile: dict[str, Any], scope: Any) -> str:
+    if scope is None:
+        return (
+            f"مبحث جزوه: {topic_line(profile)}\n"
+            f"مفاهیم کلیدی: {'، '.join(profile.get('key_concepts') or [])}\n"
+        )
+    # Book-grounded context only: LLM-detected topics/concepts can drift off-chapter.
+    head = " — ".join(b for b in (profile.get("subject"), profile.get("grade"), profile.get("track")) if b)
+    return f"منبع: {head}\n{_scope_block(scope)}"
+
+
 def extract_patterns(
     profile: dict[str, Any],
     research: dict[str, Any],
     provider: LLMProvider,
+    scope: Any = None,
 ) -> dict[str, Any]:
     user = (
-        f"مبحث جزوه: {topic_line(profile)}\n"
-        f"مفاهیم کلیدی: {'، '.join(profile.get('key_concepts') or [])}\n\n"
+        f"{_context_lines(profile, scope)}\n"
         "--- شواهد وب (تست‌های واقعی؛ فقط برای الگو، کپی ممنوع) ---\n"
         f"{_evidence_blob(research)}\n--- پایان ---\n"
         "فقط JSON بسته الگو را برگردان."
@@ -201,10 +240,122 @@ def extract_patterns(
     return normalize_pattern_pack(raw, sources=research.get("sources") or [])
 
 
-def llm_only_patterns(profile: dict[str, Any], provider: LLMProvider) -> dict[str, Any]:
+def _section_outline(sections: list[Any], titles: list[str], *, per_section: int = 400) -> str:
+    from darsamooz.chapter_scope import norm_fa
+
+    lines: list[str] = []
+    for title in titles:
+        key = norm_fa(title)
+        body = ""
+        for sec in sections:
+            if key and key in norm_fa(sec.title or ""):
+                body = " ".join((sec.text or "").split())[:per_section]
+                break
+        lines.append(f"- {title}: {body or '—'}")
+    return "\n".join(lines)
+
+
+def audit_patterns_scope(
+    patterns: list[dict[str, Any]],
+    scope: Any,
+    provider: LLMProvider,
+    sections: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Ask the LLM which patterns are really taught in this chapter.
+
+    Returns ``{"ok": bool, "verdicts": {id: {...}}, "error": str|None}``. A failed or
+    malformed audit is reported (ok=False) — never treated as "all on-chapter" silently.
+    """
+    if not patterns:
+        return {"ok": True, "verdicts": {}, "error": None}
+    from darsamooz.chapter_scope import book_snippets
+
+    blocks: list[str] = []
+    for p in patterns:
+        snips = book_snippets(sections or [], f"{p.get('name_fa') or ''} {p.get('stem_template') or ''}")
+        blocks.append(
+            f"{p['id']}: {p.get('name_fa')} | اسکلت: {p.get('stem_template')} | "
+            f"عددی: {'بله' if p.get('numeric') else 'خیر'} | بخش اعلام‌شده: {p.get('section') or '—'}\n"
+            + ("  شواهد از متن کتاب:\n" + "\n".join(f"  «{x}»" for x in snips) if snips else "  شواهد از متن کتاب: —")
+        )
+    plist = "\n".join(blocks)
     user = (
-        f"مبحث جزوه: {topic_line(profile)}\n"
-        f"مفاهیم کلیدی: {'، '.join(profile.get('key_concepts') or [])}\n\n"
+        f"{_scope_block(scope)}\nخلاصه هر بخش از متن کتاب:\n"
+        f"{_section_outline(sections or [], scope.section_titles)}\n\n"
+        f"الگوهای پیشنهادی:\n{plist}\n\nفقط JSON برگردان."
+    )
+    try:
+        raw = provider.complete_json(SCOPE_AUDIT_SYSTEM, user)
+    except Exception as exc:  # noqa: BLE001 — reported to caller
+        return {"ok": False, "verdicts": {}, "error": f"audit_error: {exc}"}
+    items = raw.get("patterns") if isinstance(raw, dict) else None
+    if not isinstance(items, list):
+        return {"ok": False, "verdicts": {}, "error": "audit_malformed: no patterns list"}
+    verdicts: dict[str, dict[str, Any]] = {}
+    for it in items:
+        if not isinstance(it, dict) or "on_chapter" not in it:
+            continue
+        pid = str(it.get("id") or "").strip()
+        oc = it.get("on_chapter")
+        if isinstance(oc, str):
+            oc = oc.strip().lower() in {"true", "1", "yes", "بله"}
+        verdicts[pid] = {
+            "on_chapter": bool(oc),
+            "section": str(it.get("section") or "").strip(),
+            "reason": str(it.get("reason") or "").strip()[:200],
+        }
+    known = {p["id"] for p in patterns}
+    if not (known & set(verdicts)):
+        return {"ok": False, "verdicts": {}, "error": "audit_malformed: no verdict for any pattern"}
+    return {"ok": True, "verdicts": verdicts, "error": None}
+
+
+def scope_filter_pack(
+    pack_body: dict[str, Any],
+    scope: Any,
+    provider: LLMProvider,
+    *,
+    sections: list[Any] | None = None,
+    log: Callable[[str], None] = lambda _m: None,
+) -> dict[str, Any]:
+    """Drop off-chapter patterns (LLM audit + deterministic section/term checks)."""
+    from darsamooz.chapter_scope import filter_patterns_to_chapter
+
+    patterns = list(pack_body.get("patterns") or [])
+    audit = audit_patterns_scope(patterns, scope, provider, sections)
+    dropped: list[dict[str, Any]] = []
+    if audit["ok"]:
+        kept_after_audit = []
+        for p in patterns:
+            v = audit["verdicts"].get(p["id"])
+            if v is None:
+                kept_after_audit.append({**p})
+                continue
+            if not v["on_chapter"]:
+                dropped.append(
+                    {"name_fa": p.get("name_fa"), "section": p.get("section"),
+                     "reason": f"off_chapter (audit): {v['reason'] or '—'}"}
+                )
+                continue
+            kept_after_audit.append({**p, "section": v["section"] or p.get("section")})
+        patterns = kept_after_audit
+    else:
+        log(f"هشدار: بررسی هم‌فصل بودن الگوها انجام نشد ({audit['error']}); فقط بررسی قطعی اعمال شد.")
+    kept, det_dropped = filter_patterns_to_chapter(patterns, scope)
+    dropped += det_dropped
+    for d in dropped:
+        log(f"الگو حذف شد (خارج از فصل): «{d.get('name_fa')}» — {d.get('reason')}")
+    return {
+        **pack_body,
+        "patterns": kept,
+        "dropped_patterns": dropped,
+        "scope_audit": {"ok": audit["ok"], "error": audit["error"], "verdicts": audit["verdicts"]},
+    }
+
+
+def llm_only_patterns(profile: dict[str, Any], provider: LLMProvider, scope: Any = None) -> dict[str, Any]:
+    user = (
+        f"{_context_lines(profile, scope)}\n"
         "شواهد وب در دسترس نیست. بر اساس شناخت عمومی از آزمون‌های ایران (کنکور، نهایی، آزمایشی) "
         "برای همین مبحث الگو بساز؛ evidence را خالی بگذار. فقط JSON بسته الگو را برگردان."
     )
@@ -250,6 +401,21 @@ def mine_web_patterns(
         )
     now = datetime.now(timezone.utc).isoformat()
 
+    from darsamooz.chapter_scope import ground_search_queries, load_scope
+
+    scope, scope_sections = load_scope(book_slug, chapter, settings)
+    grounding: dict[str, Any] = {"queries": profile.get("search_queries") or [], "dropped": []}
+    if scope is not None:
+        from darsamooz.web_search import max_queries_per_run
+
+        grounding = ground_search_queries(
+            profile, scope, max_queries=max(1, int(max_queries)) if max_queries else max_queries_per_run()
+        )
+        for d in grounding["dropped"]:
+            log(f"کوئری حذف شد (خارج از فصل): «{d['query']}» — {d['reason']}")
+        log("کوئری‌های جستجو (بر اساس بخش‌های فصل): " + " | ".join(grounding["queries"]))
+    queries = grounding["queries"]
+
     research: dict[str, Any]
     if llm_only:
         log("الگوبرداری بدون وب (فقط مدل)…")
@@ -258,7 +424,7 @@ def mine_web_patterns(
             "skipped": True,
             "backend": None,
             "attempts": [],
-            "queries": profile.get("search_queries") or [],
+            "queries": queries,
             "sources": [],
             "excerpt_count": 0,
             "note": "کاربر ادامه بدون جستجوی وب را انتخاب کرد.",
@@ -267,12 +433,12 @@ def mine_web_patterns(
         if prev.get("error"):
             research["previous_error"] = prev.get("error")
             research["attempts"] = prev.get("attempts") or []
-        pack_body = llm_only_patterns(profile, provider)
+        pack_body = llm_only_patterns(profile, provider, scope)
         status = "llm_only"
     else:
         try:
             research = (research_fn or web_research)(
-                profile.get("search_queries") or [],
+                queries,
                 topic_line=topic_line(profile),
                 backend=backend,
                 max_sources=max_sources,
@@ -286,7 +452,8 @@ def mine_web_patterns(
                     "ok": False,
                     "error": str(exc),
                     "attempts": exc.attempts,
-                    "queries": profile.get("search_queries") or [],
+                    "queries": queries,
+                    "dropped_queries": grounding["dropped"],
                     "sources": [],
                     "searched_at": now,
                 },
@@ -296,13 +463,17 @@ def mine_web_patterns(
             )
             raise
         research["searched_at"] = now
+        research["dropped_queries"] = grounding["dropped"]
         save_web_sources(research, book_slug, chapter, settings)
         log(
             f"{len(research.get('sources') or [])} منبع، "
             f"{research.get('excerpt_count', 0)} نمونه تست استخراج شد. استخراج الگو…"
         )
-        pack_body = extract_patterns(profile, research, provider)
+        pack_body = extract_patterns(profile, research, provider, scope)
         status = "web"
+
+    if scope is not None:
+        pack_body = scope_filter_pack(pack_body, scope, provider, sections=scope_sections, log=log)
 
     pack = {
         "status": status,
@@ -312,6 +483,8 @@ def mine_web_patterns(
         "search_backend": research.get("backend"),
         "search_attempts": research.get("attempts") or [],
         "search_queries": research.get("queries") or [],
+        "dropped_queries": grounding["dropped"],
+        "chapter_sections": scope.section_titles if scope is not None else [],
         "search_requests": research.get("search_requests"),
         "sources": [
             {"title": s.get("title"), "url": s.get("url")}
@@ -325,7 +498,12 @@ def mine_web_patterns(
         "extracted_by": _call_meta(provider),
     }
     if not pack["patterns"]:
-        raise RuntimeError("مدل هیچ الگوی معتبری برنگرداند؛ دوباره تلاش کنید.")
+        save_pattern_pack(pack, book_slug, chapter, settings)
+        raise RuntimeError(
+            "هیچ الگوی معتبر و هم‌فصلی باقی نماند"
+            + (f" ({len(pack.get('dropped_patterns') or [])} الگو خارج از فصل حذف شد)" if pack.get("dropped_patterns") else "")
+            + "؛ دوباره تلاش کنید."
+        )
     save_pattern_pack(pack, book_slug, chapter, settings)
     return pack
 
@@ -378,7 +556,8 @@ def format_pattern_for_prompt(pack: dict[str, Any], pattern: dict[str, Any] | No
         lines.append("سبک آزمون: " + "، ".join(pack["exam_styles"]))
     if pattern:
         lines += [
-            f"الگوی هدف ({pattern.get('id')}): {pattern.get('name_fa')}",
+            f"الگوی هدف ({pattern.get('id')}): {pattern.get('name_fa')}"
+            + (f" — بخش: {pattern['section']}" if pattern.get("section") else ""),
             f"اسکلت صورت سؤال: {pattern.get('stem_template') or '—'}",
             f"شکل گزینه‌ها: {pattern.get('option_format') or pack.get('option_format_notes') or '—'}",
             f"عددی/محاسباتی: {'بله' if pattern.get('numeric') else 'خیر'}",

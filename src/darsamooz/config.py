@@ -16,8 +16,10 @@ VALID_PROVIDERS = _VALID_PROVIDERS
 _MODEL_SUGGESTIONS: dict[str, list[str]] = {
     "gemini": ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"],
     "openrouter": [
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "baidu/ernie-5.5-flash-preview:free",
         "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
         "meta-llama/llama-3.3-70b-instruct:free",
     ],
     "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1"],

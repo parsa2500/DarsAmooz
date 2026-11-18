@@ -15,6 +15,7 @@ from typing import Any
 from darsamooz.config import Settings, get_settings
 from darsamooz.ingest import chapter_title_for, read_book_meta
 from darsamooz.llm import LLMProvider
+from darsamooz.chapter_scope import clean_section_titles, filter_topic_items, ground_search_queries, load_scope
 from darsamooz.sections import load_sections, sections_dir
 
 TOPIC_SYSTEM = """You classify Iranian school study material (جزوه / کتاب درسی) precisely.
@@ -28,7 +29,7 @@ Read the given Persian text and return ONLY JSON:
   "topics": ["مباحث اصلی (3-8 items, specific)"],
   "key_concepts": ["مفاهیم/فرمول‌های کلیدی (5-12 items)"],
   "exam_targets": ["کنکور سراسری", "امتحان نهایی", "آزمون‌های آزمایشی", ...],
-  "search_queries": ["3-4 Persian web queries to find real 4-option tests on exactly this topic"],
+  "search_queries": ["3-4 Persian web queries to find real 4-option tests on exactly this chapter"],
   "summary_fa": "one or two Persian sentences",
   "confidence": 0.0
 }
@@ -37,6 +38,10 @@ Rules:
 - search_queries should look like what an Iranian student types, e.g. "تست فیزیک دهم فصل اول اندازه گیری کنکور".
 - search_queries: Persian words only (no English like "10th grade"), 3-7 words each.
 - book = the textbook name (e.g. "فیزیک (۱)"), not the chapter title.
+- topics and search_queries MUST come from the listed section titles («عنوان بخش‌ها»). A formula or
+  law that the text only mentions as an example (e.g. F = ma used to explain units) is NOT a topic.
+- Use only words that appear in the text or are ordinary Persian; never invent terms
+  (wrong: «فاکتور دوم نیوتون»).
 - Persian values. confidence in [0,1].
 """
 
@@ -94,7 +99,7 @@ def normalize_topic_profile(raw: dict[str, Any] | None, *, fallback_chapter: str
     if not out["search_queries"]:
         out["search_queries"] = default_search_queries(out)
     else:
-        out["search_queries"] = out["search_queries"][:4]
+        out["search_queries"] = out["search_queries"][:8]
     return out
 
 
@@ -136,7 +141,7 @@ def build_topic_sample(book_slug: str, chapter: int, settings: Settings | None =
         f"عنوان سند: {meta.get('title') or book_slug}",
         f"نام فایل: {meta.get('source_filename') or '—'}",
         f"عنوان فصل: {title}",
-        "عنوان بخش‌ها: " + " | ".join(s.title for s in sections[:25] if s.title),
+        "عنوان بخش‌ها: " + " | ".join(clean_section_titles(sections, title)[:25]),
         "--- نمونه متن ---",
     ]
     # Take text from the beginning, middle and end so long chapters are represented.
@@ -170,6 +175,7 @@ def analyze_topic(
     profile = normalize_topic_profile(
         raw, fallback_chapter=chapter_title_for(book_slug, chapter, settings)
     )
+    apply_chapter_scope(profile, book_slug, chapter, settings)
     call = getattr(provider, "last_call", None) or {}
     profile.update(
         {
@@ -182,6 +188,28 @@ def analyze_topic(
     )
     if save:
         save_topic_profile(profile, book_slug, chapter, settings)
+    return profile
+
+
+def apply_chapter_scope(
+    profile: dict[str, Any], book_slug: str, chapter: int, settings: Settings | None = None
+) -> dict[str, Any]:
+    """Ground queries/topics in the chapter's real sections; record what was dropped."""
+    scope, _ = load_scope(book_slug, chapter, settings)
+    if scope is None:
+        return profile
+    from darsamooz.web_search import max_queries_per_run
+
+    dropped_items: list[dict[str, str]] = []
+    for key in ("topics", "key_concepts"):
+        kept, dropped = filter_topic_items(profile.get(key) or [], scope)
+        profile[key] = kept
+        dropped_items += [{**d, "field": key} for d in dropped]
+    g = ground_search_queries(profile, scope, max_queries=max_queries_per_run())
+    profile["search_queries"] = g["queries"]
+    profile["dropped_search_queries"] = g["dropped"]
+    profile["dropped_topic_items"] = dropped_items
+    profile["chapter_sections"] = g["section_titles"]
     return profile
 
 
